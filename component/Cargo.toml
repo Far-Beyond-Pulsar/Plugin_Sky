@@ -2,11 +2,11 @@
 name = "sky_component"
 version = "0.1.0"
 edition = "2024"
-description = "Sky (pulsar.sky): the atmosphere component (the level's sky and its clouds), its row and the registrations of the plugin's Helio feature (atmosphere tables, clouds and the sky composite)"
+description = "Sky (pulsar.sky): the atmosphere component (the level's sky and its clouds), its row, its row join and the plugin's Helio feature set (atmosphere tables, clouds and the sky composite)"
 
-# Hosts (the editor through the plugin crate, the game) link it; the
-# component, its row, scene rows, render feature and level rule register
-# through `inventory` once the crate is linked.
+# The plugin's root crate (`sky_plugin`) submits what this crate defines:
+# the component class, the scene rows, the render feature and the level
+# rule.
 [lib]
 name = "sky_component"
 
@@ -16,8 +16,6 @@ default = ["gpu"]
 gpu = []
 
 [dependencies]
-# The plugin's descriptor and its registrations' origin.
-pulsar_plugins = { workspace = true }
 engine_class_derive = { workspace = true }
 pulsar_reflection = { workspace = true, features = ["prims-gpui"] }
 gpui-ce = { workspace = true }
@@ -27,11 +25,12 @@ pulsar_world_registry = { workspace = true }
 pulsar_scene_model = { workspace = true }
 helio_component = { workspace = true }
 engine_state = { workspace = true }
+# The project file index: a texture asset id to its file.
+engine_fs = { workspace = true }
 # The game's slim feature set (as pulsar_game): linking the plugin must not
 # pull the editor's features into a game build. A path dependency because
 # the workspace table cannot opt out of default features.
 engine_backend = { path = "../../../../crates/core/engine_backend", default-features = false, features = ["render"] }
-inventory = { workspace = true }
 # The engine-class derive logs through it.
 tracing = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -42,11 +41,6 @@ helio = { workspace = true }
 helio-feature-api = { workspace = true }
 helio-scene-join = { workspace = true }
 helio-pass-sky = { workspace = true }
-
-[dev-dependencies]
-pollster = "=0.4.0"
-glam = { workspace = true }
-helio-core = { workspace = true }
 
 [lints]
 workspace = true

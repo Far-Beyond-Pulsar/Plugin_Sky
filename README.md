@@ -19,13 +19,17 @@ draw phases and api crates.
 
 | Crate | Path | What |
 |---|---|---|
-| `sky_component` | `component/` | Sky (pulsar.sky): the atmosphere component (the level's sky and its clouds), its row and the registrations of the plugin's Helio feature (atmosphere tables, clouds and the sky composite) |
-| `sky_plugin` | `editor/` | Sky (pulsar.sky): the editor plugin -- its metadata, over the plugin's component crate |
+| `sky_plugin` | `./` (`src/`) | The plugin's root crate: the one place it registers everything it contributes (`src/runtime.rs`; `src/editor.rs` with the `editor` feature). Its integration tests are in `tests/`. |
+| `sky_component` | `component/` | Sky (pulsar.sky): the atmosphere component (the level's sky and its clouds), its row, its row join and the plugin's Helio feature set (atmosphere tables, clouds and the sky composite) |
+| `sky_editor` | `editor/` | Sky (pulsar.sky): the editor crate -- the level editor's sky entry and World Settings section |
 | `sky-examples` | `examples/` | The sky plugin's standalone hosts on Helio: Earth's atmosphere over a lit scene |
 | `helio-pass-sky` | `feature/` | Helio atmosphere (sky) passes |
 
-- **Runtime module** (what a game built for a project links): `sky_component`.
-- **Editor module** (what the editor links in addition): `sky_plugin`.
+- **Root crate** `sky_plugin`: the only crate that registers anything (the
+  component class, its scene rows, the Helio feature, the one-sky level
+  rule; with `editor`, the Create menu's sky and the World Settings
+  section). A game links it without `editor`; the editor links it with.
+  Other plugins never depend on it.
 - **Requires**: nothing. A project enables or disables the plugin in its
   `Pulsar.toml` (`[plugins]`); disabled, the kind is absent and the frame
   draws without it.
@@ -43,8 +47,8 @@ only inside a Pulsar-Native checkout:
 ```bash
 git clone --recursive https://github.com/Far-Beyond-Pulsar/Pulsar-Native
 cd Pulsar-Native
-cargo check -p sky_component -p sky_plugin -p sky-examples -p helio-pass-sky --tests
-cargo test -p sky_component -p helio-pass-sky
+cargo check -p sky_component -p sky_editor -p sky_plugin --features sky_plugin/editor -p sky-examples -p helio-pass-sky --tests
+cargo test -p sky_component -p sky_plugin -p helio-pass-sky
 ```
 
 Suites that render real frames need a GPU; CI leaves them out by name

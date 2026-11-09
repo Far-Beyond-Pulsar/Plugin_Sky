@@ -1,8 +1,7 @@
 //! Regression coverage for the sky texture layer's place in the composite
 //! shader, and for the lights the sky keeps honouring.
 use helio_pass_sky::sky_texture::{
-    build_image, custom_path, custom_source, decode, direction_to_uv, presets_available, rotation,
-    source, MAX_WIDTH,
+    build_image, decode, direction_to_uv, file_path, file_source, rotation, source, MAX_WIDTH,
 };
 use std::path::{Path, PathBuf};
 
@@ -110,15 +109,15 @@ fn rotation_is_orthonormal() {
 }
 
 #[test]
-fn custom_files_get_stable_distinct_codes() {
-    let a = custom_source(Path::new("sky_a.exr"));
-    let b = custom_source(Path::new("sky_b.hdr"));
+fn files_get_stable_distinct_codes() {
+    let a = file_source(Path::new("sky_a.exr"));
+    let b = file_source(Path::new("sky_b.hdr"));
     assert_ne!(a, b);
-    assert_eq!(a, custom_source(Path::new("sky_a.exr")));
-    assert_ne!(a & source::CUSTOM, 0);
-    assert_eq!(custom_path(a).unwrap(), PathBuf::from("sky_a.exr"));
-    assert_eq!(custom_source(Path::new("")), source::NONE);
-    assert!(custom_path(source::GALAXY).is_none());
+    assert_eq!(a, file_source(Path::new("sky_a.exr")));
+    assert_ne!(a & source::FILE, 0);
+    assert_eq!(file_path(a).unwrap(), PathBuf::from("sky_a.exr"));
+    assert_eq!(file_source(Path::new("")), source::NONE);
+    assert!(file_path(source::NONE).is_none());
 }
 
 #[test]
@@ -134,36 +133,38 @@ fn size_cap_and_mip_chain() {
     assert_eq!(half::f16::from_bits(image.mips[12][0]).to_f32(), 0.5);
 }
 
-#[test]
-fn builtin_presets_decode_and_the_combination_is_brighter() {
-    if !presets_available() {
-        eprintln!("built-in sky presets were not embedded in this build; skipping");
-        return;
-    }
-    let total = |image: &helio_pass_sky::sky_texture::SkyImage| -> f64 {
-        image
-            .mips
-            .last()
-            .unwrap()
-            .chunks(4)
-            .map(|p| half::f16::from_bits(p[0]).to_f32() as f64)
-            .sum()
-    };
-    let galaxy = decode(source::GALAXY).unwrap();
-    let nebula = decode(source::NEBULA).unwrap();
-    let both = decode(source::GALAXY_NEBULA).unwrap();
-    assert_eq!((galaxy.width, galaxy.height), (4096, 2048));
-    assert_eq!((both.width, both.height), (4096, 2048));
-    assert!(total(&nebula) > 0.0);
-    assert!(
-        total(&both) > total(&galaxy),
-        "the nebula is added to the galaxy"
-    );
+/// Writes a small Radiance HDR panorama whose pixels are `value` into the
+/// temp dir and returns its path.
+fn write_hdr(name: &str, value: f32) -> PathBuf {
+    use image::codecs::hdr::HdrEncoder;
+    let (w, h) = (8usize, 4usize);
+    let pixels = vec![image::Rgb([value, value * 0.5, value * 0.25]); w * h];
+    let dir = std::env::temp_dir().join("pulsar_sky_tests");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{}_{name}.hdr", std::process::id()));
+    let file = std::fs::File::create(&path).unwrap();
+    HdrEncoder::new(std::io::BufWriter::new(file))
+        .encode(&pixels, w, h)
+        .unwrap();
+    path
 }
 
 #[test]
-fn a_missing_custom_file_is_an_error_not_a_panic() {
-    assert!(decode(custom_source(Path::new("definitely/not/here.hdr"))).is_err());
+fn a_project_hdr_decodes_as_linear_light_with_a_mip_chain() {
+    let path = write_hdr("linear", 4.0);
+    let image = decode(file_source(&path)).unwrap();
+    assert_eq!((image.width, image.height), (8, 4));
+    assert_eq!(image.mips.len(), 4);
+    // HDR is scene-linear: no sRGB curve, values above 1 survive.
+    let red = half::f16::from_bits(image.mips[0][0]).to_f32();
+    assert!((red - 4.0).abs() < 0.1, "red was {red}");
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn a_missing_file_is_an_error_not_a_panic() {
+    assert!(decode(file_source(Path::new("definitely/not/here.hdr"))).is_err());
+    assert!(decode(source::NONE).is_err());
 }
 
 #[test]

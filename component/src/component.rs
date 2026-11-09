@@ -6,12 +6,13 @@
 //! SceneDB derives an [`crate::AtmosphereSourceRow`] from the authored
 //! value; the sky's row join places it as the sky pass's
 //! `helio_pass_sky::AtmosphereRow` row in `"atmospheres"`.
-use engine_class_derive::{engine_class, register_world_component};
+use engine_class_derive::{engine_class, world_component};
 use helio_pass_sky::AtmosphereRow;
 use helio_pass_sky::atmosphere::placement;
 use helio_pass_sky::sky_texture::{self, source as sky_source};
 use helio_pass_sky::{CloudLayer, CloudRepresentation, PlanetWeather};
 use pulsar_reflection::Reflectable;
+use pulsar_reflection::TextureSrc;
 use serde::{Deserialize, Serialize};
 
 /// Where the atmosphere's planet is.
@@ -27,32 +28,6 @@ pub enum AtmospherePlacement {
 impl Default for AtmospherePlacement {
     fn default() -> Self {
         Self::GroundAtOrigin
-    }
-}
-
-/// Which panorama the sky texture layer shows.
-///
-/// The built-in panoramas are the galaxy and nebula layers of Toolbench's
-/// Deep-Space Skybox, CC0 1.0 (public domain; free for commercial use, no
-/// credit required). They are starless: the procedural stars, shooting stars
-/// and directional-light moon draw over them. Credits and license text:
-/// `plugins/vendor/sky/feature/assets/deep-space/`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Reflectable)]
-pub enum SkyTexturePreset {
-    /// Galaxy band with faint blue and red nebula clouds. Deep-Space Skybox
-    /// by Toolbench, CC0 1.0.
-    GalaxyAndNebula,
-    /// The dusty galaxy band alone. Deep-Space Skybox by Toolbench, CC0 1.0.
-    Galaxy,
-    /// Faint nebula clouds alone. Deep-Space Skybox by Toolbench, CC0 1.0.
-    Nebula,
-    /// Your own equirectangular panorama: set Texture File.
-    CustomFile,
-}
-
-impl Default for SkyTexturePreset {
-    fn default() -> Self {
-        Self::GalaxyAndNebula
     }
 }
 
@@ -220,15 +195,16 @@ pub struct AtmosphereComponent {
     /// directional lights, not from the texture. It fades out in daylight.
     #[property(category = "Sky Texture")]
     pub sky_texture_enabled: bool,
-    /// The panorama: a built-in galaxy/nebula preset (CC0, Deep-Space Skybox
-    /// by Toolbench) or your own file.
+    /// The panorama: an equirectangular (2:1) texture asset of the project
+    /// (`.hdr`, `.exr`, `.png`, `.jpg`), chosen with the asset picker and
+    /// stored as its asset id, so it survives moves and renames. `.hdr` and
+    /// `.exr` are used as linear light, other formats as sRGB; wider than
+    /// 4096 px is halved to fit. With none chosen the sky is the procedural
+    /// sky alone. Levels saved with a project-relative path keep working.
+    /// The Deep-Space presets (CC0) are added to a project from the Create
+    /// menu, not carried in the engine.
     #[property(category = "Sky Texture")]
-    pub sky_texture_preset: SkyTexturePreset,
-    /// For Custom File: an equirectangular (2:1) .hdr, .exr, .png or .jpg,
-    /// relative to the project or absolute. .hdr/.exr are used as linear
-    /// light; other formats as sRGB. Wider than 4096 px is halved to fit.
-    #[property(category = "Sky Texture")]
-    pub sky_texture_file: String,
+    pub sky_texture_file: TextureSrc,
     /// Brightness of the panorama. The built-in layers are physically faint,
     /// so the default is well above 1.
     #[property(min = 0.0, max = 1000.0, step = 0.5, category = "Sky Texture")]
@@ -313,14 +289,8 @@ impl AtmosphereComponent {
             shooting_star_speed: row.shooting_star_speed,
             shooting_star_length: row.shooting_star_length,
             sky_texture_enabled: row.sky_texture_source != sky_source::NONE,
-            sky_texture_preset: match row.sky_texture_source {
-                sky_source::GALAXY => SkyTexturePreset::Galaxy,
-                sky_source::NEBULA => SkyTexturePreset::Nebula,
-                code if code & sky_source::CUSTOM != 0 => SkyTexturePreset::CustomFile,
-                _ => SkyTexturePreset::GalaxyAndNebula,
-            },
-            sky_texture_file: sky_texture::custom_path(row.sky_texture_source)
-                .map(|path| path.to_string_lossy().into_owned())
+            sky_texture_file: sky_texture::file_path(row.sky_texture_source)
+                .map(|path| TextureSrc::new(path.to_string_lossy()))
                 .unwrap_or_default(),
             sky_texture_intensity: row.sky_texture_intensity,
             sky_texture_opacity: row.sky_texture_opacity,
@@ -330,33 +300,56 @@ impl AtmosphereComponent {
         }
     }
 
+    /// The project file the panorama is: the texture asset's path through
+    /// the project's file index (the same lookup every texture reference
+    /// uses), or, for a path saved by an older level, that path under the
+    /// project folder. `None` when none is chosen or the id is not indexed.
+    pub fn sky_texture_path(&self) -> Option<std::path::PathBuf> {
+        let project_root = engine_state::get_project_path().map(std::path::PathBuf::from);
+        if let Some(reference) = self.sky_texture_file.asset_ref() {
+            let root = project_root?;
+            let relative = engine_fs::open_project_file_index(&root)
+                .ok()
+                .flatten()
+                .and_then(|index| {
+                    index
+                        .path_for_asset_id_kind("texture", reference.as_str())
+                        .ok()
+                        .flatten()
+                });
+            let Some(relative) = relative else {
+                tracing::warn!(
+                    id = reference.as_str(),
+                    "sky texture asset id is not indexed in this project; drawing the procedural sky"
+                );
+                return None;
+            };
+            return Some(if relative.is_relative() {
+                root.join(relative)
+            } else {
+                relative
+            });
+        }
+        let file = self.sky_texture_file.legacy_path()?.trim();
+        if file.is_empty() {
+            return None;
+        }
+        let path = std::path::Path::new(file);
+        Some(match project_root {
+            Some(root) if path.is_relative() => root.join(path),
+            _ => path.to_path_buf(),
+        })
+    }
+
     /// The sky texture source the row carries: nothing when the layer is
-    /// off (or a custom file is unnamed), otherwise the preset or the file,
-    /// resolved against the project folder when relative.
+    /// off or no panorama resolves, otherwise the file's code.
     pub fn sky_texture_source(&self) -> u32 {
         if !self.sky_texture_enabled {
             return sky_source::NONE;
         }
-        match self.sky_texture_preset {
-            SkyTexturePreset::GalaxyAndNebula => sky_source::GALAXY_NEBULA,
-            SkyTexturePreset::Galaxy => sky_source::GALAXY,
-            SkyTexturePreset::Nebula => sky_source::NEBULA,
-            SkyTexturePreset::CustomFile => {
-                let file = self.sky_texture_file.trim();
-                if file.is_empty() {
-                    return sky_source::NONE;
-                }
-                let path = std::path::Path::new(file);
-                let resolved = if path.is_absolute() {
-                    path.to_path_buf()
-                } else {
-                    match engine_state::get_project_path() {
-                        Some(root) => std::path::PathBuf::from(root).join(path),
-                        None => path.to_path_buf(),
-                    }
-                };
-                sky_texture::custom_source(&resolved)
-            }
+        match self.sky_texture_path() {
+            Some(path) => sky_texture::file_source(&path),
+            None => sky_source::NONE,
         }
     }
 
@@ -451,7 +444,8 @@ impl AtmosphereComponent {
     }
 }
 
-#[register_world_component]
+// The plugin's root crate registers the class.
+#[world_component]
 impl AtmosphereComponent {}
 
 #[cfg(test)]

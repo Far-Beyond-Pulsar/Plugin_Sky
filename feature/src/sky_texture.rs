@@ -1,11 +1,12 @@
 //! The sky texture layer: an equirectangular (latitude-longitude) panorama
 //! drawn behind the atmosphere's stars, moon and shooting stars.
 //!
-//! The authored component names a *source* ([`source`]): one of the built-in
-//! presets (the CC0 Deep-Space Skybox galaxy and nebula layers, fetched at
-//! build time by `build.rs`, see `assets/deep-space/CREDITS.md`) or a file of
-//! the user's choosing ([`custom_source`]). The row carries only that 32-bit
-//! code; [`SkyTextureCache`] turns it into a GPU texture on demand:
+//! The authored component names a *source* ([`source`]): none, or a project
+//! texture file (an `.hdr`, `.exr`, `.png` or `.jpg`, referenced by the
+//! component as a texture asset and resolved to a path through the project's
+//! file index, see [`file_source`]). The row carries only that 32-bit code;
+//! [`SkyTextureCache`] turns it into a GPU texture on demand. No panorama is
+//! built into the binary: without one the sky is the procedural sky alone.
 //!
 //! - decoding, the size cap and the mip chain run on a worker thread, so a
 //!   large panorama never stalls a frame (the sky shows without the layer
@@ -17,7 +18,7 @@
 //! - only one panorama is resident, and it is released as soon as the layer
 //!   is turned off. Panoramas wider than [`MAX_WIDTH`] are halved until they
 //!   fit (4096x2048 half-float is 64 MiB, 85 MiB with mips);
-//! - a custom file that changes on disk is reloaded.
+//! - a file that changes on disk is reloaded.
 //!
 //! Orientation: the texture's centre looks along -Z and its top is +Y;
 //! [`rotation`] (yaw about Y, then pitch about X, then roll about Z) turns
@@ -33,55 +34,25 @@ use std::time::SystemTime;
 pub mod source {
     /// No sky texture.
     pub const NONE: u32 = 0;
-    /// Built-in: the Deep-Space Skybox galaxy band.
-    pub const GALAXY: u32 = 1;
-    /// Built-in: the Deep-Space Skybox nebula clouds.
-    pub const NEBULA: u32 = 2;
-    /// Built-in: galaxy band with the nebula brightened ([`super::NEBULA_GAIN`]) and added.
-    pub const GALAXY_NEBULA: u32 = 3;
-    /// Flag of a user file; the low bits index [`super::custom_source`]'s table.
-    pub const CUSTOM: u32 = 0x8000_0000;
+    /// Flag of a project file; the low bits index [`super::file_source`]'s table.
+    pub const FILE: u32 = 0x8000_0000;
 }
 
-/// The nebula layer is two orders of magnitude fainter than the galaxy (peak
-/// 0.018 against 0.162); this is the gain it is mixed with in the combined preset.
-pub const NEBULA_GAIN: f32 = 6.0;
 /// Widest panorama kept; wider ones are halved until they fit.
 pub const MAX_WIDTH: u32 = 4096;
 
-#[cfg(not(sky_presets_missing))]
-static GALAXY_HDR: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/deep-space/deep_space_galaxy_4k.hdr"
-));
-#[cfg(not(sky_presets_missing))]
-static NEBULA_HDR: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/deep-space/deep_space_nebula_4k.hdr"
-));
-#[cfg(sky_presets_missing)]
-static GALAXY_HDR: &[u8] = &[];
-#[cfg(sky_presets_missing)]
-static NEBULA_HDR: &[u8] = &[];
-
-/// Whether the built-in panoramas were embedded (`build.rs` could download
-/// them). User textures work either way.
-pub fn presets_available() -> bool {
-    !GALAXY_HDR.is_empty() && !NEBULA_HDR.is_empty()
-}
-
-fn custom_table() -> &'static Mutex<Vec<PathBuf>> {
+fn file_table() -> &'static Mutex<Vec<PathBuf>> {
     static TABLE: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
     TABLE.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-/// The source code of the user file at `path` (the same path always gets the
+/// The source code of the project file at `path` (the same path always gets the
 /// same code). An empty path is [`source::NONE`].
-pub fn custom_source(path: &Path) -> u32 {
+pub fn file_source(path: &Path) -> u32 {
     if path.as_os_str().is_empty() {
         return source::NONE;
     }
-    let mut table = custom_table().lock().unwrap_or_else(|e| e.into_inner());
+    let mut table = file_table().lock().unwrap_or_else(|e| e.into_inner());
     let index = match table.iter().position(|known| known == path) {
         Some(index) => index,
         None => {
@@ -89,16 +60,16 @@ pub fn custom_source(path: &Path) -> u32 {
             table.len() - 1
         }
     };
-    source::CUSTOM | index as u32
+    source::FILE | index as u32
 }
 
-/// The file behind a [`source::CUSTOM`] code.
-pub fn custom_path(code: u32) -> Option<PathBuf> {
-    if code & source::CUSTOM == 0 {
+/// The file behind a [`source::FILE`] code.
+pub fn file_path(code: u32) -> Option<PathBuf> {
+    if code & source::FILE == 0 {
         return None;
     }
-    let table = custom_table().lock().unwrap_or_else(|e| e.into_inner());
-    table.get((code & !source::CUSTOM) as usize).cloned()
+    let table = file_table().lock().unwrap_or_else(|e| e.into_inner());
+    table.get((code & !source::FILE) as usize).cloned()
 }
 
 /// Texture-space orientation of the panorama in the world: yaw about Y, then
@@ -221,37 +192,11 @@ pub fn build_image(mut w: u32, mut h: u32, mut data: Vec<f32>) -> SkyImage {
     }
 }
 
-fn decode_hdr(bytes: &[u8]) -> Result<(u32, u32, Vec<f32>), String> {
-    if bytes.is_empty() {
-        return Err("the built-in sky panoramas were not embedded in this build".into());
-    }
-    let image = image::load_from_memory_with_format(bytes, image::ImageFormat::Hdr)
-        .map_err(|e| format!("built-in sky panorama: {e}"))?;
-    Ok(linear_rgb(image))
-}
-
 /// Decodes the panorama behind `code`. Slow; call off the render thread.
 pub fn decode(code: u32) -> Result<SkyImage, String> {
-    let (w, h, data) = match code {
-        source::GALAXY => decode_hdr(GALAXY_HDR)?,
-        source::NEBULA => decode_hdr(NEBULA_HDR)?,
-        source::GALAXY_NEBULA => {
-            let (w, h, mut galaxy) = decode_hdr(GALAXY_HDR)?;
-            let (nw, nh, nebula) = decode_hdr(NEBULA_HDR)?;
-            if (w, h) != (nw, nh) {
-                return Err("the galaxy and nebula layers differ in size".into());
-            }
-            for (g, n) in galaxy.iter_mut().zip(nebula) {
-                *g += n * NEBULA_GAIN;
-            }
-            (w, h, galaxy)
-        }
-        code => {
-            let path = custom_path(code).ok_or("unknown sky texture")?;
-            let image = image::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            linear_rgb(image)
-        }
-    };
+    let path = file_path(code).ok_or("unknown sky texture")?;
+    let image = image::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (w, h, data) = linear_rgb(image);
     if w == 0 || h == 0 {
         return Err("empty image".into());
     }
@@ -259,7 +204,7 @@ pub fn decode(code: u32) -> Result<SkyImage, String> {
 }
 
 fn modified(code: u32) -> Option<SystemTime> {
-    std::fs::metadata(custom_path(code)?).ok()?.modified().ok()
+    std::fs::metadata(file_path(code)?).ok()?.modified().ok()
 }
 
 struct Loaded {
@@ -284,7 +229,7 @@ pub struct SkyTextureCache {
     frames: u32,
 }
 
-/// Frames between checks of a custom file's modification time.
+/// Frames between checks of a file's modification time.
 const RELOAD_CHECK_FRAMES: u32 = 120;
 
 impl SkyTextureCache {
@@ -387,9 +332,8 @@ impl SkyTextureCache {
             }
             None => {
                 tracing::info!(
-                    "sky texture {code:#x}: decoding on a worker thread (built-in presets embedded: {}, file: {:?})",
-                    presets_available(),
-                    custom_path(code)
+                    "sky texture {code:#x}: decoding on a worker thread ({:?})",
+                    file_path(code)
                 );
                 let (sender, receiver) = mpsc::channel();
                 std::thread::Builder::new()
