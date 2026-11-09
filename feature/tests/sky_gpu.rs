@@ -30,17 +30,14 @@ fn the_composite_pipeline_builds_on_a_device() {
 }
 
 #[test]
-fn a_preset_becomes_resident_and_turning_it_off_frees_it() {
-    if !sky_texture::presets_available() {
-        eprintln!("presets not embedded; skipping");
-        return;
-    }
+fn a_project_file_becomes_resident_and_turning_it_off_frees_it() {
     let Some((device, queue)) = device() else {
         eprintln!("no GPU adapter; skipping");
         return;
     };
     let mut cache = SkyTextureCache::new(&device);
-    let code = source::GALAXY_NEBULA;
+    let path = write_hdr();
+    let code = sky_texture::file_source(&path);
     let start = std::time::Instant::now();
     while !cache.is_resident(code) {
         let _ = cache.view(&device, &queue, code);
@@ -56,4 +53,18 @@ fn a_preset_becomes_resident_and_turning_it_off_frees_it() {
         !cache.is_resident(code),
         "turning the layer off frees the texture"
     );
+    let _ = std::fs::remove_file(path);
+}
+
+/// A small Radiance HDR panorama in the temp dir.
+fn write_hdr() -> std::path::PathBuf {
+    let pixels = vec![image::Rgb([1.0f32, 0.5, 0.25]); 16 * 8];
+    let dir = std::env::temp_dir().join("pulsar_sky_tests");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{}_gpu.hdr", std::process::id()));
+    let file = std::fs::File::create(&path).unwrap();
+    image::codecs::hdr::HdrEncoder::new(std::io::BufWriter::new(file))
+        .encode(&pixels, 16, 8)
+        .unwrap();
+    path
 }

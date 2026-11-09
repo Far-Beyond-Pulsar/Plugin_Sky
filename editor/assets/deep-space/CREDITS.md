@@ -12,8 +12,9 @@ Only the `galaxy` and `nebula` layers are used. They are separate from the
 `stars` layer, so they are starless: the engine's procedural stars, shooting
 stars and directional-light moon stay independently controllable on top.
 
-The files are **not stored in this repository**. `build.rs` downloads the
-archive, verifies its SHA-256 and extracts the two 4096x2048 Radiance HDR
-files into the build directory, unmodified. They are embedded into the engine
-binary at build time. Offline builds still compile; the built-in presets are
-then reported as unavailable and user-supplied textures keep working.
+These files are copied into a project's `assets/sky/deep-space/` when the
+author chooses Create > "Sky Panoramas (CC0 Deep-Space)" in the editor. The
+plugin downloads the archive, verifies its SHA-256 and writes the two
+4096x2048 Radiance HDR files unchanged, plus a combined file (galaxy with the
+nebula brightened and added) derived from them. They are not stored in this
+repository and are not embedded in any binary.

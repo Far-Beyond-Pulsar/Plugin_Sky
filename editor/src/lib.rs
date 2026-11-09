@@ -13,6 +13,9 @@ rust_i18n::i18n!("locales", fallback = "en");
 /// extension points (`ui_level_editor::extend`).
 pub mod level_editor;
 
+/// Adding the CC0 Deep-Space sky panoramas to a project.
+pub mod panoramas;
+
 use plugin_editor_api::*;
 
 /// Links the component crate, so its registrations come with this crate.

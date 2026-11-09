@@ -57,6 +57,31 @@ inventory::submit! {
     }
 }
 
+/// The Create menu's "Sky Panoramas": adds the CC0 Deep-Space panoramas to
+/// the project's assets (a background download, see [`crate::panoramas`]).
+/// It adds no object to the level, so it reports as a no-op with what it did.
+fn add_sky_panoramas(_state: &mut LevelEditorState) -> CommandResult {
+    match crate::panoramas::install_in_background() {
+        Ok(()) => CommandResult::noop(
+            "Adding the Deep-Space panoramas to assets/sky/deep-space; choose one as the Sky's Texture when it finishes",
+        ),
+        Err(reason) => CommandResult::noop(reason),
+    }
+}
+
+inventory::submit! {
+    CreateEntry {
+        origin: pulsar_plugins::origin!(),
+        id: "sky_panoramas",
+        menu_label: Some(|| rust_i18n::t!("LevelEditor.Create.SkyPanoramas").to_string()),
+        environment_label: None,
+        quick_add: None,
+        offered: None,
+        order: 301,
+        create: add_sky_panoramas,
+    }
+}
+
 inventory::submit! {
     LevelComponentSection {
         origin: pulsar_plugins::origin!(),

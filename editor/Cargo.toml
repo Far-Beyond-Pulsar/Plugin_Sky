@@ -21,6 +21,15 @@ ui_level_editor = { workspace = true }
 inventory = { workspace = true }
 pulsar_plugins = { workspace = true }
 rust-i18n = { workspace = true }
+# Adding the CC0 Deep-Space panoramas to a project (`panoramas`): downloaded
+# at editor time, verified, written into the project. Never in a game build.
+engine_fs = { workspace = true }
+engine_state = { workspace = true }
+tracing = { workspace = true }
+image = { workspace = true, features = ["hdr"] }
+sha2 = "0.10"
+ureq = "2.12"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true
