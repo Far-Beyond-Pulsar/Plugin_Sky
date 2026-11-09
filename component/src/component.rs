@@ -6,13 +6,13 @@
 //! SceneDB derives an [`crate::AtmosphereSourceRow`] from the authored
 //! value; the sky's row join places it as the sky pass's
 //! `helio_pass_sky::AtmosphereRow` row in `"atmospheres"`.
-use engine_class_derive::{engine_class, register_world_component};
+use engine_class_derive::{engine_class, world_component};
 use helio_pass_sky::AtmosphereRow;
 use helio_pass_sky::atmosphere::placement;
 use helio_pass_sky::sky_texture::{self, source as sky_source};
-use pulsar_reflection::TextureSrc;
 use helio_pass_sky::{CloudLayer, CloudRepresentation, PlanetWeather};
 use pulsar_reflection::Reflectable;
+use pulsar_reflection::TextureSrc;
 use serde::{Deserialize, Serialize};
 
 /// Where the atmosphere's planet is.
@@ -444,7 +444,8 @@ impl AtmosphereComponent {
     }
 }
 
-#[register_world_component]
+// The plugin's root crate registers the class.
+#[world_component]
 impl AtmosphereComponent {}
 
 #[cfg(test)]

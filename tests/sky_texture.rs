@@ -1,6 +1,10 @@
 //! The sky texture layer on the authored component: defaults, saved-level
 //! compatibility, independence from the procedural layers, the project
 //! texture it names, orientation and blend.
+
+// The plugin as a game links it: its root, with every registration.
+use sky_plugin as _;
+
 use helio_pass_sky::AtmosphereRow;
 use helio_pass_sky::sky_texture::{file_path, source};
 use pulsar_reflection::TextureSrc;
@@ -127,9 +131,13 @@ fn an_asset_id_that_is_not_indexed_draws_the_procedural_sky() {
 
 #[test]
 fn a_saved_path_and_a_saved_id_both_load() {
-    let old = serde_json::json!({ "sky_texture_enabled": true, "sky_texture_file": "assets/sky/a.hdr" });
+    let old =
+        serde_json::json!({ "sky_texture_enabled": true, "sky_texture_file": "assets/sky/a.hdr" });
     let loaded: AtmosphereComponent = serde_json::from_value(old).unwrap();
-    assert_eq!(loaded.sky_texture_file.legacy_path(), Some("assets/sky/a.hdr"));
+    assert_eq!(
+        loaded.sky_texture_file.legacy_path(),
+        Some("assets/sky/a.hdr")
+    );
     let id = "3f2c1a9e-7b4d-4e5a-9c1d-0a1b2c3d4e5f";
     let new = serde_json::json!({ "sky_texture_file": id });
     let loaded: AtmosphereComponent = serde_json::from_value(new).unwrap();

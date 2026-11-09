@@ -6,20 +6,16 @@
 //! - Its row ([`AtmosphereSourceRow`]): the atmosphere row SceneDB derives
 //!   from the authored value; the plugin's row join places a planet at its
 //!   owner (`helio_pass_sky::scene_rows`).
-//! - The registrations of the plugin's Helio feature
-//!   (`helio_pass_sky::SkyFeature`: the atmosphere's tables, the clouds and
+//! - The plugin's Helio feature ([`render_features`]:
+//!   `helio_pass_sky::SkyFeature`, the atmosphere's tables, the clouds and
 //!   the sky composite; it publishes the frame's `sky`, `sun_visibility`
-//!   and `sun_transmittance`), its scene rows, and its level rule (one sky)
-//!   with the engine.
+//!   and `sun_transmittance`), its scene rows ([`register_columns`],
+//!   [`derivation`]) and what its level rule (one sky, [`ONE_ATMOSPHERE`])
+//!   reads ([`atmospheres`]).
 //!
-//! Everything registers through `inventory` once the crate is linked: hosts link it
-//! without naming it (a game built for a project links the runtime modules
-//! of the plugins its `Pulsar.toml` enables, the editor every installed
-//! plugin through `installed_plugins`; `pulsar_plugins`) and know no sky type.
-
-// The plugin's descriptor (`../pulsar-plugin.toml`): linking this crate
-// installs the plugin; a project enables it or not (`pulsar_plugins`).
-pulsar_plugins::installed!("../pulsar-plugin.toml");
+//! This crate registers nothing itself: the plugin's root crate
+//! (`sky_plugin`) submits the component class, the scene rows, the feature
+//! and the level rule, in one place.
 
 pub mod component;
 pub mod ground;
@@ -125,11 +121,14 @@ pulsar_scenedb::pulsar_reflection::inventory::submit! {
     }
 }
 
-fn register_columns(store: &mut SceneGpuStore, device: &std::sync::Arc<wgpu::Device>) {
+/// Registers the atmosphere source rows' SceneDB columns the row join reads.
+pub fn register_columns(store: &mut SceneGpuStore, device: &std::sync::Arc<wgpu::Device>) {
     AtmosphereSourceRow::register_gpu_columns_growable(store, 4, device);
 }
 
-fn derivation(
+/// The sky's row join: places a planet's atmosphere at its owner
+/// (`helio_pass_sky::scene_rows`).
+pub fn derivation(
     device: &wgpu::Device,
     keys: helio_scene_join::RowJoinKeys,
 ) -> Box<dyn helio_scene_join::SceneDerivation> {
@@ -140,26 +139,10 @@ fn derivation(
     ))
 }
 
-inventory::submit! {
-    engine_backend::scene::helio_bridge::SceneRowsRegistration {
-        origin: pulsar_plugins::origin!(),
-        register_columns,
-        derivation,
-    }
-}
-
 /// The sky's feature: the atmosphere's tables, the clouds and the sky
 /// composite.
-fn render_features() -> helio_feature_api::FeatureSet {
+pub fn render_features() -> helio_feature_api::FeatureSet {
     helio_feature_api::FeatureSet::new().with(helio_pass_sky::SkyFeature)
-}
-
-inventory::submit! {
-    engine_backend::subsystems::render::RenderFeatureRegistration {
-        origin: pulsar_plugins::origin!(),
-        features: render_features,
-        configure: |config| config,
-    }
 }
 
 /// The sky's class name.
@@ -186,22 +169,6 @@ pub fn level_atmosphere(world: &World) -> Option<(Entity, Entity)> {
         instance,
         pulsar_scene_model::attachments::owner_of(world, instance)?,
     ))
-}
-
-// A level has one sky (#1057): the atmosphere pass draws the first enabled
-// row, so a second would only fight the first.
-inventory::submit! {
-    engine_backend::scene::level_rules::LevelSingletonRegistration {
-        origin: pulsar_plugins::origin!(),
-        class_name: ATMOSPHERE_CLASS,
-        refusal: ONE_ATMOSPHERE,
-        instances: atmospheres,
-        is: |value| value.is::<AtmosphereComponent>(),
-        held: |world, instance| world.get::<AtmosphereComponent>(instance).is_some(),
-        default_is: true,
-        enabled_only: false,
-        edits_checked: false,
-    }
 }
 
 #[cfg(test)]
@@ -246,22 +213,6 @@ mod tests {
         assert_eq!(
             row.center[3].to_bits(),
             helio_pass_sky::atmosphere::placement::CENTER
-        );
-    }
-
-    #[test]
-    fn registers_its_feature_and_its_rule() {
-        let features =
-            engine_backend::subsystems::render::helio_renderer::render_features::plugin_features();
-        assert!(
-            features.ids().contains(&"helio.sky"),
-            "features: {:?}",
-            features.ids()
-        );
-        assert!(
-            inventory::iter::<engine_backend::scene::level_rules::LevelSingletonRegistration>
-                .into_iter()
-                .any(|rule| rule.class_name == ATMOSPHERE_CLASS)
         );
     }
 }

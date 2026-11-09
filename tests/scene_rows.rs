@@ -4,6 +4,9 @@
 //! the join's outputs. Needs a GPU adapter (lavapipe works); skips without
 //! one.
 
+// The plugin as a game links it: its root, with every registration.
+use sky_plugin as _;
+
 use std::sync::Arc;
 
 use engine_backend::scene::{SceneWorldExt, SpawnObject, Transform, Visibility, attachments};

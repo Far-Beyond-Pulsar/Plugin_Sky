@@ -1,25 +1,17 @@
 [package]
-name = "sky_plugin"
+name = "sky_editor"
 version = "0.1.0"
 edition = "2024"
-description = "Sky (pulsar.sky): the editor plugin -- its metadata, over the plugin's component crate"
+description = "Sky (pulsar.sky): the editor crate -- the level editor's sky entry and World Settings section, over the plugin's component crate"
 
 [lib]
-name = "sky_plugin"
-
-[features]
-# Statically linked hosts (the editor) use the Rust API; the component crate
-# (with everything it registers) comes with this crate.
-builtin = []
+name = "sky_editor"
 
 [dependencies]
 sky_component = { workspace = true }
-plugin_editor_api = { workspace = true }
-# The level editor UI: registrations through its extension points
-# (`ui_level_editor::extend`), each naming its origin.
+# The level editor UI the root registers through its extension points
+# (`ui_level_editor::extend`).
 ui_level_editor = { workspace = true }
-inventory = { workspace = true }
-pulsar_plugins = { workspace = true }
 rust-i18n = { workspace = true }
 # Adding the CC0 Deep-Space panoramas to a project (`panoramas`): downloaded
 # at editor time, verified, written into the project. Never in a game build.
