@@ -39,6 +39,14 @@ serde_json = { workspace = true }
 pulsar_reflection = { workspace = true }
 bytemuck = { workspace = true }
 wgpu = { workspace = true }
+# `tests/starter_content.rs` (with the `editor` feature): the panorama installer
+# against a temporary project and a local server.
+engine_fs = { workspace = true }
+engine_state = { workspace = true }
+tempfile = { workspace = true }
+tracing = { workspace = true }
+image = { workspace = true, features = ["hdr"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

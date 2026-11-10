@@ -55,20 +55,3 @@ pub fn describe(object: &str, enabled: bool) -> String {
         format!("{object}'s AtmosphereComponent is disabled, so the sky renders black.")
     }
 }
-
-/// The Create menu's "Sky Panoramas" label.
-pub fn panoramas_menu_label() -> String {
-    rust_i18n::t!("LevelEditor.Create.SkyPanoramas").to_string()
-}
-
-/// The Create menu's "Sky Panoramas": adds the CC0 Deep-Space panoramas to
-/// the project's assets (a background download, see [`crate::panoramas`]).
-/// It adds no object to the level, so it reports as a no-op with what it did.
-pub fn add_sky_panoramas(_state: &mut LevelEditorState) -> CommandResult {
-    match crate::panoramas::install_in_background() {
-        Ok(()) => CommandResult::noop(
-            "Adding the Deep-Space panoramas to assets/sky/deep-space; choose one as the Sky's Texture when it finishes",
-        ),
-        Err(reason) => CommandResult::noop(reason),
-    }
-}
