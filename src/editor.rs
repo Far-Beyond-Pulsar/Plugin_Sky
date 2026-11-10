@@ -1,8 +1,8 @@
 //! What the sky plugin registers for the editor (the `editor` feature): its
-//! level editor entries.
+//! level editor entries and its starter content (the Deep-Space panoramas).
 
-use sky_editor::level_editor;
-use ui_level_editor::extend::{CreateEntry, LevelComponentSection};
+use sky_editor::{level_editor, panoramas};
+use ui_level_editor::extend::{CreateEntry, LevelComponentSection, StarterContent};
 
 // ── Level editor ────────────────────────────────────────────────────────────
 
@@ -20,18 +20,24 @@ inventory::submit! {
     }
 }
 
-// The Create menu's "Sky Panoramas": adds the CC0 Deep-Space panoramas to
-// the project's assets (no level object).
+// Tools > Starter Content: the CC0 Deep-Space panoramas, added to the
+// project's assets (no level object). The shell downloads the pinned archive
+// with progress and cancel and checks the SHA-256; the editor crate extracts
+// and writes.
 inventory::submit! {
-    CreateEntry {
+    StarterContent {
         origin: pulsar_plugins::origin!(),
-        id: "sky_panoramas",
-        menu_label: Some(level_editor::panoramas_menu_label),
-        environment_label: None,
-        quick_add: None,
-        offered: None,
-        order: 301,
-        create: level_editor::add_sky_panoramas,
+        id: "sky.deep_space_panoramas",
+        title: "Sky Panoramas (CC0 Deep-Space)",
+        description: "Galaxy and nebula equirect HDRs by Toolbench, for the Sky's Texture",
+        license: "CC0 1.0",
+        license_url: "https://creativecommons.org/publicdomain/zero/1.0/",
+        archive_url: panoramas::ARCHIVE_URL,
+        sha256: panoramas::ARCHIVE_SHA256,
+        max_bytes: 256 << 20,
+        destination: panoramas::PROJECT_DIR,
+        order: 0,
+        install: panoramas::install,
     }
 }
 

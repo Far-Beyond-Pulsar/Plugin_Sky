@@ -14,7 +14,8 @@
 //! - [`runtime`]: what a game links. The component class, its scene rows,
 //!   the Helio feature and the level rule (a level has one sky).
 //! - `editor` (with the `editor` feature): what the editor adds. The Create
-//!   menu's sky and the World Settings section.
+//!   menu's sky, the World Settings section and the Deep-Space panoramas as
+//!   starter content.
 //!
 //! Every registration names this crate as its origin
 //! (`pulsar_plugins::origin!()`), so the plugin gate skips all of them while
