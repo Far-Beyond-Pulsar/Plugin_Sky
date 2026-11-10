@@ -40,7 +40,7 @@ struct TraceParams {
 }
 
 @group(0) @binding(0) var<storage, read> cameras: array<Camera, 2>;
-@group(0) @binding(1) var<storage, read> frame: AtmosphereFrame;
+@group(0) @binding(1) var<storage, read> atmosphere: AtmosphereFrame;
 @group(0) @binding(2) var<storage, read> atmosphere_sky_table: array<vec4<f32>>;
 @group(0) @binding(3) var transmittance_lut: texture_2d<f32>;
 @group(0) @binding(4) var multi_scattering_lut: texture_2d<f32>;
@@ -166,12 +166,12 @@ fn cloud_directional_radiance(
 ) -> vec3<f32> {
     var direct = vec3<f32>(0.0);
     let r = length(x);
-    for (var i = 0u; i < frame.directional_light_count.x; i++) {
+    for (var i = 0u; i < atmosphere.directional_light_count.x; i++) {
         let base = i * 3u;
-        let toward_light = frame.directional_lights[base].xyz;
-        let energy = frame.directional_lights[base + 1u].rgb;
+        let toward_light = atmosphere.directional_lights[base].xyz;
+        let energy = atmosphere.directional_lights[base + 1u].rgb;
         let transmittance = atmosphere_sun_transmittance_lut(
-            frame.params, transmittance_lut, lut_sampler, r, dot(x / r, toward_light));
+            atmosphere.params, transmittance_lut, lut_sampler, r, dot(x / r, toward_light));
         let od = light_optical_depth(c, x, weather, footprint, toward_light);
         direct += transmittance * energy
             * cloud_sun_scattering(dot(view_ray, toward_light), od);
@@ -187,24 +187,24 @@ struct CloudTrace {
 // The cirrus sheet seen along `d` (unit) from the eye, crossed `t` km away
 // with `footprint` km pixels: rgb its radiance, w its transmittance.
 fn trace_cirrus(c: CloudLayerParams, d: vec3<f32>, t: f32, footprint: f32) -> vec4<f32> {
-    let x = frame.eye.xyz + d * t;
+    let x = atmosphere.eye.xyz + d * t;
     let depth = cirrus_depth(c, x, footprint);
     if depth <= 0.0 { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
     let up = normalize(x);
     // Slanted through the sheet, the view and the light cross more of it.
     let od = depth / max(abs(dot(d, up)), 0.08);
     var direct = vec3<f32>(0.0);
-    for (var i = 0u; i < frame.directional_light_count.x; i++) {
+    for (var i = 0u; i < atmosphere.directional_light_count.x; i++) {
         let base = i * 3u;
-        let toward_light = frame.directional_lights[base].xyz;
-        let energy = frame.directional_lights[base + 1u].rgb;
+        let toward_light = atmosphere.directional_lights[base].xyz;
+        let energy = atmosphere.directional_lights[base + 1u].rgb;
         let od_sun = depth / max(dot(toward_light, up), 0.08);
         let sunlight = atmosphere_sun_transmittance_lut(
-            frame.params, transmittance_lut, lut_sampler, length(x), dot(up, toward_light));
+            atmosphere.params, transmittance_lut, lut_sampler, length(x), dot(up, toward_light));
         direct += sunlight * energy
             * cloud_sun_scattering(dot(d, toward_light), od_sun);
     }
-    let sky = atmosphere_sky_table_eval(frame, d * t, up, vec3<f32>(1.0));
+    let sky = atmosphere_sky_table_eval(d * t, up, vec3<f32>(1.0));
     let source = c.albedo * (direct + 0.5 * sky);
     let opacity = 1.0 - exp(-od);
     return vec4<f32>(source * opacity, 1.0 - opacity);
@@ -214,8 +214,8 @@ fn trace_clouds(d: vec3<f32>, limit: f32, uv: vec2<f32>, jitter: f32) -> CloudTr
     var out: CloudTrace;
     out.color = vec4<f32>(0.0);
     out.front = limit;
-    let c = cloud_layer_params(frame);
-    let eye = frame.eye.xyz;
+    let c = cloud_layer_params(atmosphere);
+    let eye = atmosphere.eye.xyz;
     // Radians between traced rays (a quarter-resolution pixel), for the
     // noise's mips: finer noise would alias between them.
     let pixel_angle = 2.0 / (cameras[0].proj[1][1] * f32(params.quarter.y));
@@ -244,8 +244,8 @@ fn trace_clouds(d: vec3<f32>, limit: f32, uv: vec2<f32>, jitter: f32) -> CloudTr
     // (dimmed towards the base, under the cloud) and below (the ground's).
     let mid = d * (t0 + 0.5 * span);
     let up = normalize(eye + mid);
-    let sky_above = atmosphere_sky_table_eval(frame, mid, up, vec3<f32>(1.0));
-    let sky_below = atmosphere_sky_table_eval(frame, mid, -up, vec3<f32>(1.0));
+    let sky_above = atmosphere_sky_table_eval(mid, up, vec3<f32>(1.0));
+    let sky_below = atmosphere_sky_table_eval(mid, -up, vec3<f32>(1.0));
     var radiance = vec3<f32>(0.0);
     var transmittance = 1.0;
     var depth_sum = 0.0;
@@ -315,22 +315,22 @@ fn trace_clouds(d: vec3<f32>, limit: f32, uv: vec2<f32>, jitter: f32) -> CloudTr
     // The air between the eye and the clouds' front.
     var air_radiance: vec3<f32>;
     var air_transmittance: f32;
-    if length(eye) > frame.params.top_radius {
-        let air_segment = atmosphere_segment(frame.params, eye, d, false);
+    if length(eye) > atmosphere.params.top_radius {
+        let air_segment = atmosphere_segment(atmosphere.params, eye, d, false);
         air_radiance = vec3<f32>(0.0);
         air_transmittance = 1.0;
-        for (var i = 0u; i < frame.directional_light_count.x; i++) {
+        for (var i = 0u; i < atmosphere.directional_light_count.x; i++) {
             let base = i * 3u;
-            let air = atmosphere_integrate(frame.params, frame.directional_lights[base].xyz,
+            let air = atmosphere_integrate(atmosphere.params, atmosphere.directional_lights[base].xyz,
                 transmittance_lut, multi_scattering_lut, lut_sampler, eye, d, air_segment.x,
                 max(min(out.front, air_segment.y), air_segment.x), CLOUD_SPACE_AIR_STEPS, false);
-            air_radiance += air.radiance * frame.directional_lights[base + 1u].rgb;
+            air_radiance += air.radiance * atmosphere.directional_lights[base + 1u].rgb;
             if i == 0u {
                 air_transmittance = dot(air.transmittance, vec3<f32>(1.0 / 3.0));
             }
         }
     } else {
-        let slice = aerial_slice(out.front, frame.sun_illuminance.w) * AERIAL_SLICES - 0.5;
+        let slice = aerial_slice(out.front, atmosphere.sun_illuminance.w) * AERIAL_SLICES - 0.5;
         var aerial = textureSampleLevel(aerial_lut, lut_sampler, vec3<f32>(uv, (max(slice, 0.0) + 0.5) / AERIAL_SLICES), 0.0);
         if slice < 0.0 { aerial = mix(vec4<f32>(0.0, 0.0, 0.0, 1.0), aerial, clamp(slice + 1.0, 0.0, 1.0)); }
         air_radiance = aerial.rgb;
@@ -349,7 +349,7 @@ fn trace(@builtin(global_invocation_id) id: vec3<u32>) {
     var result: CloudTrace;
     result.color = vec4<f32>(0.0);
     result.front = limit;
-    if atmosphere_has_clouds(frame) {
+    if atmosphere_has_clouds(atmosphere) {
         // A different start along the ray each time the pixel is traced.
         let jitter = fract(interleaved_gradient(vec2<f32>(p)) + f32(params.frame >> 2u) * 0.618034);
         let uv = (vec2<f32>(p) + 0.5) / vec2<f32>(params.half);
@@ -442,7 +442,7 @@ fn reconstruct(@builtin(global_invocation_id) id: vec3<u32>) {
 fn sun_visibility(@builtin(global_invocation_id) id: vec3<u32>) {
     if any(id.xy >= params.full) { return; }
     let pixel = vec2<i32>(id.xy);
-    let sun = frame.sun.xyz;
+    let sun = atmosphere.sun.xyz;
     let terrain_size = vec2<i32>(textureDimensions(directional_visibility));
     var terrain = textureLoad(directional_visibility, min(pixel, terrain_size - 1), 0);
     // Only a terrain visibility for this sun counts.
