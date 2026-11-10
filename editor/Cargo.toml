@@ -21,7 +21,7 @@ tracing = { workspace = true }
 image = { workspace = true, features = ["hdr"] }
 sha2 = "0.10"
 ureq = "2.12"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true
