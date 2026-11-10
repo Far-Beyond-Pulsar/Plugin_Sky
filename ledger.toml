@@ -1,0 +1,83 @@
+# The sky plugin's rows of the SceneDB closure ledger (Pulsar-Native#1035):
+# its classes, GPU schemas, buffers, pass crates and call sites. A plugin owns
+# the rows of what it ships (Pulsar-Native#1606); `cargo test -p scene_inventory`
+# in a Pulsar-Native checkout recomputes every fact column, checks the human
+# columns, and fails on a missing, stale or misplaced row. The columns are
+# described in Pulsar-Native's crates/core/scene_inventory/ledger.toml.
+
+# ── Exposed component classes ───────────────────────────────────
+
+[[class]]
+name = "AtmosphereComponent"
+category = "Rendering"
+world_registered = true
+own_gpu_columns = true
+owner = "sky_component::component"
+disposition = "render, Phase 4. Its derived AtmosphereSourceRow is written on every insert, write, removal and replay; the sky plugin's row join gates it on the instance and its owner and places it into atmospheres (a planet at its owner centred on the owner), which the atmosphere pass reads. It is the level's one sky: a second is refused when added, and extras in a level file are disabled on load (#1057)"
+target_contract = "Phase 4; 09-component-structure-and-graph-boundary.md"
+test = "plugins/vendor/sky/tests/scene_rows.rs (atmospheres_follow_their_owner_and_their_enabled_state)"
+status = "verified"
+
+# ── GPU-bearing schemas ─────────────────────────────────────────
+
+[[schema]]
+type = "AtmosphereComponent"
+path = "sky_component::component::AtmosphereComponent"
+buffers = ["atmospheres"]
+clears_on_remove = true
+releases_var_len = false
+registered = false
+writer = "the authored value's SceneDB GPU dispatch is its derived AtmosphereSourceRow (environment_rows), on every insert, write, removal and replay; the generated companion uploads nothing"
+owner = "sky_component::component"
+disposition = "keep: the authored type's GPU row is AtmosphereSourceRow, the environment join's input"
+target_contract = "Phase 4; 09-component-structure-and-graph-boundary.md"
+test = "plugins/vendor/sky/tests/scene_rows.rs (atmospheres_follow_their_owner_and_their_enabled_state)"
+status = "verified"
+
+[[schema]]
+type = "AtmosphereSourceRow"
+path = "sky_component::AtmosphereSourceRow"
+buffers = ["atmosphere_sources"]
+clears_on_remove = true
+releases_var_len = false
+registered = true
+writer = "AtmosphereComponent's derived GPU registration (the pass row in the owner's space, enabled from the authored flag), on every insert, write, removal and replay"
+owner = "sky_component"
+disposition = "keep: the environment join's atmospheres input"
+target_contract = "Phase 4; 09-component-structure-and-graph-boundary.md"
+test = "plugins/vendor/sky/tests/scene_rows.rs (atmospheres_follow_their_owner_and_their_enabled_state)"
+status = "verified"
+
+# ── GPU buffer keys ─────────────────────────────────────────────
+
+[[buffer]]
+key = "atmosphere_sources"
+producers = ["AtmosphereSourceRow"]
+consumers = []
+owner = "sky_component"
+disposition = "keep: AtmosphereComponent in its owner's space, derived on every write; the sky plugin's row join reads it into atmospheres"
+target_contract = "Phase 4; 09-component-structure-and-graph-boundary.md"
+test = "plugins/vendor/sky/tests/scene_rows.rs (atmospheres_follow_their_owner_and_their_enabled_state)"
+status = "verified"
+
+[[buffer]]
+key = "atmospheres"
+producers = ["AtmosphereComponent"]
+consumers = ["helio-pass-sky"]
+owner = "the sky plugin's row join (helio_pass_sky::scene_rows; execution output, one row per component instance)"
+disposition = "keep: the join copies each placed, enabled AtmosphereComponent row and centres a planet placed at its owner on the owner's position; the atmosphere pass uses the first enabled row"
+target_contract = "Phase 4; 09-component-structure-and-graph-boundary.md"
+test = "plugins/vendor/sky/tests/scene_rows.rs (atmospheres_follow_their_owner_and_their_enabled_state)"
+status = "verified"
+
+# ── Render pass crates ──────────────────────────────────────────
+
+[[pass]]
+crate = "helio-pass-sky"
+in_default_graph = false
+reads = ["atmospheres"]
+owner = "helio-presets (mapping); helio-pass-sky (algorithm)"
+disposition = "runs in the editor graph. The sky is the level's one AtmosphereComponent (#1057), read through the environment join (atmospheres), with the sun from the scene join's lights; without one the sky is the graph's black background. The procedural SkyPass and its sky_components rows are retired"
+target_contract = "Phase 6; 03-gpu-reflection-and-rendering.md"
+test = "plugins/installed/tests/render_acceptance.rs (the_sky_is_the_levels_atmosphere)"
+status = "verified"

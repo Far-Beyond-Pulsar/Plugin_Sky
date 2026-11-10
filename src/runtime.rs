@@ -19,7 +19,7 @@ inventory::submit! {
         origin: pulsar_plugins::origin!(),
         name: "sky.rows",
         register_columns: sky_component::register_columns,
-        derivation: sky_component::derivation,
+        derivation: Some(sky_component::derivation),
     }
 }
 
