@@ -178,9 +178,120 @@ fn hash2(p: vec2<f32>, seed: u32) -> vec3<f32> {
     return fract(sin(h) * 43758.5453);
 }
 
-// `pixel_angle`: the angle one pixel spans. A star is never drawn thinner than
-// about a pixel (its light spread to match), or sampling a sub-pixel star
-// would make it blink between pixels as the camera moves.
+// The night sky's palette, `t` 0 hot (blue-white) to 1 cool (orange).
+fn star_color(t: f32) -> vec3<f32> {
+    return mix(vec3<f32>(0.62, 0.76, 1.0), vec3<f32>(1.0, 0.82, 0.62), t);
+}
+
+// The light of a point source `angular` radians from its centre: 1 there for
+// a source drawn at its true size. A source is never drawn thinner than about
+// a pixel (`pixel_angle`), its light spread to match over `dims` dimensions
+// (2 for a star or a meteor's head, 1 across a meteor's train), or sampling a
+// sub-pixel source would make it blink between pixels as the camera moves.
+fn point_light(angular: f32, true_radius: f32, pixel_angle: f32, dims: f32) -> f32 {
+    let radius = max(true_radius, pixel_angle * 0.9);
+    if angular >= radius { return 0.0; }
+    let core = 1.0 - smoothstep(radius * 0.12, radius, angular);
+    let halo = exp(-angular * angular / max(radius * radius * 4.0, 1e-9)) * 0.22;
+    return (core + halo) * pow(true_radius / radius, dims);
+}
+
+// Meteors (shooting stars). Each is a point, its head, crossing a short
+// great-circle path and leaving a train that fades behind it. They use the
+// stars' point profile, palette and brightness, so the two read as one sky.
+//
+// Sporadic meteors last a fraction of a second and cross 5 to 25 degrees of
+// sky. Durations are in seconds at `shooting_star_speed` 1; paths in radians.
+const METEOR_DURATION = vec2<f32>(0.35, 1.1);
+const METEOR_PATH = vec2<f32>(0.09, 0.44);
+// True angular radii of the head and of the train across.
+const METEOR_HEAD_RADIUS: f32 = 0.0006;
+const METEOR_TRAIN_RADIUS: f32 = 0.00025;
+// The train has e^-METEOR_TRAIN_FADE of the head's light `shooting_star_length`
+// behind it, and outlives the head by METEOR_TRAIN_LIFE of its decay times.
+const METEOR_TRAIN_FADE: f32 = 2.5;
+const METEOR_TRAIN_LIFE: f32 = 3.0;
+// Peak brightness over `star_brightness`: most meteors are as bright as a
+// bright star, a few (a power law, as real meteor magnitudes) far brighter.
+const METEOR_BRIGHTNESS = vec2<f32>(2.0, 12.0);
+// Candidate meteors per time slot; the most slots one meteor's life spans.
+const METEOR_CANDIDATES: u32 = 4u;
+const METEOR_SLOTS: f32 = 4.0;
+// Slot ids wrap so the hash's inputs stay small enough to stay random.
+const METEOR_SLOT_WRAP: f32 = 1024.0;
+
+// A meteor's brightness over its life (`t` 0..1): it brightens as it falls
+// into denser air, peaks late, then burns out quickly.
+fn meteor_light_curve(t: f32) -> f32 {
+    return smoothstep(0.0, 0.7, t) * (1.0 - smoothstep(0.7, 1.0, t));
+}
+
+// The meteors along `d`. Arrivals are a Poisson process at
+// `shooting_star_rate` a minute: time is cut into slots no shorter than a
+// quarter of the longest meteor, and each slot holds METEOR_CANDIDATES
+// meteors that each exist with the chance that gives the rate. So several
+// can share the sky, at irregular times, and each pixel tests a bounded few.
+fn meteor_radiance(d: vec3<f32>, pixel_angle: f32) -> vec3<f32> {
+    let p = frame.params;
+    let speed = max(p.shooting_star_speed, 0.05);
+    let train = max(p.shooting_star_length, 0.005);
+    // The longest a meteor and its train stay visible, s.
+    let longest = METEOR_DURATION.y / speed
+        * (1.0 + METEOR_TRAIN_LIFE * train / (METEOR_TRAIN_FADE * METEOR_PATH.x));
+    let slot_length = max(longest / METEOR_SLOTS, min(longest, 60.0 / max(p.shooting_star_rate, 1e-3)));
+    let chance = p.shooting_star_rate * slot_length / (60.0 * f32(METEOR_CANDIDATES));
+    let back = min(ceil(longest / slot_length), METEOR_SLOTS);
+    let now = frame.cloud_meso_offset.w;
+    let current = floor(now / slot_length);
+    var result = vec3<f32>(0.0);
+    for (var b = 0.0; b <= back; b += 1.0) {
+        let slot = current - b;
+        let key = slot - floor(slot / METEOR_SLOT_WRAP) * METEOR_SLOT_WRAP;
+        for (var k = 0u; k < METEOR_CANDIDATES; k++) {
+            let seed = p.star_seed + 991u + k * 7919u;
+            let when = hash2(vec2<f32>(key, 17.3), seed);
+            if when.x >= chance { continue; }
+            let age = now - (slot + when.y) * slot_length;
+            let duration = mix(METEOR_DURATION.x, METEOR_DURATION.y, when.z) / speed;
+            let shape = hash2(vec2<f32>(key, 53.9), seed);
+            // Angular speed, rad/s, and the train's decay rate, 1/s.
+            let rate = mix(METEOR_PATH.x, METEOR_PATH.y, shape.x) / duration;
+            let fade = METEOR_TRAIN_FADE * rate / train;
+            if age < 0.0 || age > duration + METEOR_TRAIN_LIFE / fade { continue; }
+            // It starts anywhere from 8 to 80 degrees up, uniform over the sky.
+            let y = mix(0.14, 0.98, shape.y);
+            let azimuth = shape.z * 6.2831853;
+            let start = vec3<f32>(sqrt(1.0 - y * y) * sin(azimuth), y, sqrt(1.0 - y * y) * cos(azimuth));
+            if dot(d, start) < cos(rate * duration + 0.01) { continue; }
+            // It heads any way along the sky, mostly down: meteors radiate
+            // from radiants above the horizon.
+            let look = hash2(vec2<f32>(key, 91.1), seed);
+            let east = normalize(cross(vec3<f32>(0.0, 1.0, 0.0), start));
+            let north = cross(start, east);
+            let heading = look.x * 6.2831853;
+            let m = normalize(east * cos(heading) + north * (sin(heading) - 0.6));
+            // The nearest point to `d` of the path burned so far.
+            let head_at = rate * min(age, duration);
+            let burned = clamp(atan2(dot(d, m), dot(d, start)), 0.0, head_at);
+            let nearest = start * cos(burned) + m * sin(burned);
+            // The train there glows as the head did when it passed, fading
+            // since; it fades in from the start with the light curve.
+            let passed = burned / rate;
+            var light = 0.5 * meteor_light_curve(passed / duration) * exp(-(age - passed) * fade)
+                * point_light(length(d - nearest), METEOR_TRAIN_RADIUS, pixel_angle, 1.0);
+            if age < duration {
+                let head = start * cos(head_at) + m * sin(head_at);
+                light += meteor_light_curve(age / duration)
+                    * point_light(length(d - head), METEOR_HEAD_RADIUS, pixel_angle, 2.0);
+            }
+            let peak = mix(METEOR_BRIGHTNESS.x, METEOR_BRIGHTNESS.y, pow(look.y, 4.0));
+            result += mix(star_color(look.z), vec3<f32>(1.0), 0.5) * light * peak * p.star_brightness;
+        }
+    }
+    return result;
+}
+
+// `pixel_angle`: the angle one pixel spans.
 fn night_radiance(d: vec3<f32>, pixel_angle: f32) -> vec3<f32> {
     let p = frame.params;
     if p.night_sky_enabled == 0u || dot(d, vec3<f32>(0.0, 1.0, 0.0)) < -0.02 {
@@ -205,36 +316,14 @@ fn night_radiance(d: vec3<f32>, pixel_angle: f32) -> vec3<f32> {
             let jitter = h.xy;
             let delta = (vec2<f32>(f32(x), f32(y)) + jitter - cell_uv) / cell;
             let angular = length(vec2<f32>(delta.x * 6.2831853 * cos((lat - 0.5) * 3.14159265), delta.y * 3.14159265));
-            let true_radius = mix(0.00016, 0.00072, pow(h.y, 3.0));
-            let radius = max(true_radius, pixel_angle * 0.9);
-            let spread = (true_radius * true_radius) / (radius * radius);
-            if angular >= radius { continue; }
+            let light = point_light(angular, mix(0.00016, 0.00072, pow(h.y, 3.0)), pixel_angle, 2.0);
+            if light <= 0.0 { continue; }
             let twinkle = select(1.0, 0.58 + 0.42 * sin(frame.cloud_meso_offset.w * p.star_twinkle_speed * (1.5 + h.x * 3.0) + h.z * 6.2831853), h.x < p.star_twinkle_fraction);
-            let core = 1.0 - smoothstep(radius * 0.12, radius, angular);
-            let halo = exp(-angular * angular / max(radius * radius * 4.0, 1e-9)) * 0.22;
-            let temperature = mix(vec3<f32>(0.62, 0.76, 1.0), vec3<f32>(1.0, 0.82, 0.62), h.z);
-            result += temperature * (core + halo) * twinkle * p.star_brightness * mix(0.35, 1.0, h.y) * spread;
+            result += star_color(h.z) * light * twinkle * p.star_brightness * mix(0.35, 1.0, h.y);
         }
     }
     if p.shooting_stars_enabled != 0u && p.shooting_star_rate > 0.0 {
-        let period = 60.0 / max(p.shooting_star_rate, 0.001);
-        let slot = floor(frame.cloud_meso_offset.w / period);
-        let age = frame.cloud_meso_offset.w - slot * period;
-        let event = hash2(vec2<f32>(slot, 31.7), p.star_seed + 991u);
-        let start_lon = event.x * 6.2831853;
-        let start_lat = (event.y - 0.5) * 2.3;
-        let start = vec3<f32>(cos(start_lat) * sin(start_lon), sin(start_lat), cos(start_lat) * cos(start_lon));
-        let side = normalize(cross(start, vec3<f32>(0.0, 1.0, 0.0)) + vec3<f32>(0.001, 0.0, 0.0));
-        let travel = min(p.shooting_star_speed * age * 0.1, p.shooting_star_length);
-        let center = normalize(start + side * travel);
-        let along = dot(d - center, side);
-        let across = length(d - center - side * along);
-        let event_live = select(1.0, 0.0, age > 0.6 / max(p.shooting_star_speed, 0.05));
-        let trail = smoothstep(-p.shooting_star_length, -p.shooting_star_length * 0.65, along)
-            * (1.0 - smoothstep(-0.02, 0.0, along))
-            * exp(-across * across / 0.000008) * event_live;
-        let head = exp(-dot(d - center, d - center) / 0.000012) * event_live;
-        result += vec3<f32>(0.58, 0.76, 1.0) * (trail * 24.0 + head * 70.0);
+        result += meteor_radiance(d, pixel_angle);
     }
     return result;
 }
