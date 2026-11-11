@@ -178,16 +178,27 @@ fn hash2(p: vec2<f32>, seed: u32) -> vec3<f32> {
     return fract(sin(h) * 43758.5453);
 }
 
-// The night sky's palette, `t` 0 hot (blue-white) to 1 cool (orange).
-fn star_color(t: f32) -> vec3<f32> {
-    return mix(vec3<f32>(0.62, 0.76, 1.0), vec3<f32>(1.0, 0.82, 0.62), t);
+// The night sky's stars, by a star's hash `h` (0..1): palette (`h` 0 hot
+// blue-white to 1 cool orange), true angular radius, and peak brightness
+// relative to `star_brightness`. Stars, constellation stars and shooting
+// stars' heads all use these, so they are one population.
+fn star_color(h: f32) -> vec3<f32> {
+    return mix(vec3<f32>(0.62, 0.76, 1.0), vec3<f32>(1.0, 0.82, 0.62), h);
+}
+
+fn star_radius(h: f32) -> f32 {
+    return mix(0.00016, 0.00072, pow(h, 3.0));
+}
+
+fn star_peak(h: f32) -> f32 {
+    return mix(0.35, 1.0, h);
 }
 
 // The light of a point source `angular` radians from its centre: 1 there for
 // a source drawn at its true size. A source is never drawn thinner than about
 // a pixel (`pixel_angle`), its light spread to match over `dims` dimensions
-// (2 for a star or a meteor's head, 1 across a meteor's train), or sampling a
-// sub-pixel source would make it blink between pixels as the camera moves.
+// (2 for a star, 1 across a shooting star's train), or sampling a sub-pixel
+// source would make it blink between pixels as the camera moves.
 fn point_light(angular: f32, true_radius: f32, pixel_angle: f32, dims: f32) -> f32 {
     let radius = max(true_radius, pixel_angle * 0.9);
     if angular >= radius { return 0.0; }
@@ -196,48 +207,54 @@ fn point_light(angular: f32, true_radius: f32, pixel_angle: f32, dims: f32) -> f
     return (core + halo) * pow(true_radius / radius, dims);
 }
 
-// Meteors (shooting stars). Each is a point, its head, crossing a short
-// great-circle path and leaving a train that fades behind it. They use the
-// stars' point profile, palette and brightness, so the two read as one sky.
+// The light across a hairline `angular` radians from its centre: a tent at
+// most a pixel wide (`pixel_angle`) with no halo, 1 at the centre for a line
+// drawn at its true half-width. A thinner line keeps its light per unit length
+// (the tent's area): it dims rather than thickens.
+fn hairline(angular: f32, true_half_width: f32, pixel_angle: f32) -> f32 {
+    let half = max(true_half_width, pixel_angle * 0.5);
+    return max(1.0 - angular / half, 0.0) * (true_half_width / half);
+}
+
+// Shooting stars. The head is one of the night's stars, drawn exactly as the
+// others, crossing a short great-circle path. On top of it, each optional
+// (0 turns it off): a flare at the burn peak (`shooting_star_flare`), a train
+// behind it (`shooting_star_trail`, reaching `shooting_star_length`) and the
+// train's afterglow once the head is gone (`shooting_star_afterglow`), tinted
+// toward white by `shooting_star_heat`.
 //
 // Sporadic meteors last a fraction of a second and cross 5 to 25 degrees of
 // sky. Durations are in seconds at `shooting_star_speed` 1; paths in radians.
 const METEOR_DURATION = vec2<f32>(0.35, 1.1);
 const METEOR_PATH = vec2<f32>(0.09, 0.44);
-// True angular radii of the head and of the train across.
-const METEOR_HEAD_RADIUS: f32 = 0.0006;
-const METEOR_TRAIN_RADIUS: f32 = 0.00025;
 // The train has e^-METEOR_TRAIN_FADE of the head's light `shooting_star_length`
-// behind it, and outlives the head by METEOR_TRAIN_LIFE of its decay times.
+// behind it; the afterglow is drawn for METEOR_AFTERGLOW_LIFE of its decay
+// times.
 const METEOR_TRAIN_FADE: f32 = 2.5;
-const METEOR_TRAIN_LIFE: f32 = 3.0;
-// Peak brightness over `star_brightness`: most meteors are as bright as a
-// bright star, a few (a power law, as real meteor magnitudes) far brighter.
-const METEOR_BRIGHTNESS = vec2<f32>(2.0, 12.0);
-// Candidate meteors per time slot; the most slots one meteor's life spans.
+const METEOR_AFTERGLOW_LIFE: f32 = 4.0;
+// Candidate shooting stars per time slot; the most slots one's life spans.
 const METEOR_CANDIDATES: u32 = 4u;
 const METEOR_SLOTS: f32 = 4.0;
 // Slot ids wrap so the hash's inputs stay small enough to stay random.
 const METEOR_SLOT_WRAP: f32 = 1024.0;
 
-// A meteor's brightness over its life (`t` 0..1): it brightens as it falls
+// The flare over a shooting star's life (`t` 0..1): it brightens as it falls
 // into denser air, peaks late, then burns out quickly.
 fn meteor_light_curve(t: f32) -> f32 {
     return smoothstep(0.0, 0.7, t) * (1.0 - smoothstep(0.7, 1.0, t));
 }
 
-// The meteors along `d`. Arrivals are a Poisson process at
+// The shooting stars along `d`. Arrivals are a Poisson process at
 // `shooting_star_rate` a minute: time is cut into slots no shorter than a
-// quarter of the longest meteor, and each slot holds METEOR_CANDIDATES
-// meteors that each exist with the chance that gives the rate. So several
-// can share the sky, at irregular times, and each pixel tests a bounded few.
+// quarter of the longest life, and each slot holds METEOR_CANDIDATES that each
+// exist with the chance that gives the rate. So several can share the sky, at
+// irregular times, and each pixel tests a bounded few.
 fn meteor_radiance(d: vec3<f32>, pixel_angle: f32) -> vec3<f32> {
     let p = frame.params;
     let speed = max(p.shooting_star_speed, 0.05);
     let train = max(p.shooting_star_length, 0.005);
-    // The longest a meteor and its train stay visible, s.
-    let longest = METEOR_DURATION.y / speed
-        * (1.0 + METEOR_TRAIN_LIFE * train / (METEOR_TRAIN_FADE * METEOR_PATH.x));
+    let afterglow = max(p.shooting_star_afterglow, 0.0) / speed;
+    let longest = METEOR_DURATION.y / speed + METEOR_AFTERGLOW_LIFE * afterglow;
     let slot_length = max(longest / METEOR_SLOTS, min(longest, 60.0 / max(p.shooting_star_rate, 1e-3)));
     let chance = p.shooting_star_rate * slot_length / (60.0 * f32(METEOR_CANDIDATES));
     let back = min(ceil(longest / slot_length), METEOR_SLOTS);
@@ -253,16 +270,14 @@ fn meteor_radiance(d: vec3<f32>, pixel_angle: f32) -> vec3<f32> {
             if when.x >= chance { continue; }
             let age = now - (slot + when.y) * slot_length;
             let duration = mix(METEOR_DURATION.x, METEOR_DURATION.y, when.z) / speed;
+            if age < 0.0 || age > duration + METEOR_AFTERGLOW_LIFE * afterglow { continue; }
             let shape = hash2(vec2<f32>(key, 53.9), seed);
-            // Angular speed, rad/s, and the train's decay rate, 1/s.
-            let rate = mix(METEOR_PATH.x, METEOR_PATH.y, shape.x) / duration;
-            let fade = METEOR_TRAIN_FADE * rate / train;
-            if age < 0.0 || age > duration + METEOR_TRAIN_LIFE / fade { continue; }
+            let path = mix(METEOR_PATH.x, METEOR_PATH.y, shape.x);
             // It starts anywhere from 8 to 80 degrees up, uniform over the sky.
             let y = mix(0.14, 0.98, shape.y);
             let azimuth = shape.z * 6.2831853;
             let start = vec3<f32>(sqrt(1.0 - y * y) * sin(azimuth), y, sqrt(1.0 - y * y) * cos(azimuth));
-            if dot(d, start) < cos(rate * duration + 0.01) { continue; }
+            if dot(d, start) < cos(path + 0.01) { continue; }
             // It heads any way along the sky, mostly down: meteors radiate
             // from radiants above the horizon.
             let look = hash2(vec2<f32>(key, 91.1), seed);
@@ -270,25 +285,148 @@ fn meteor_radiance(d: vec3<f32>, pixel_angle: f32) -> vec3<f32> {
             let north = cross(start, east);
             let heading = look.x * 6.2831853;
             let m = normalize(east * cos(heading) + north * (sin(heading) - 0.6));
-            // The nearest point to `d` of the path burned so far.
+            // The star it is.
+            let true_radius = star_radius(look.y);
+            let color = star_color(look.z);
+            let hot = mix(color, vec3<f32>(1.0), clamp(p.shooting_star_heat, 0.0, 1.0));
+            let t = age / duration;
+            let rate = path / duration;
             let head_at = rate * min(age, duration);
-            let burned = clamp(atan2(dot(d, m), dot(d, start)), 0.0, head_at);
-            let nearest = start * cos(burned) + m * sin(burned);
-            // The train there glows as the head did when it passed, fading
-            // since; it fades in from the start with the light curve.
-            let passed = burned / rate;
-            var light = 0.5 * meteor_light_curve(passed / duration) * exp(-(age - passed) * fade)
-                * point_light(length(d - nearest), METEOR_TRAIN_RADIUS, pixel_angle, 1.0);
-            if age < duration {
+            var light = vec3<f32>(0.0);
+            if t < 1.0 {
+                // The star, fading in and out at its path's ends, plus the
+                // flare.
+                let ends = smoothstep(0.0, 0.1, t) * (1.0 - smoothstep(0.9, 1.0, t));
                 let head = start * cos(head_at) + m * sin(head_at);
-                light += meteor_light_curve(age / duration)
-                    * point_light(length(d - head), METEOR_HEAD_RADIUS, pixel_angle, 2.0);
+                light += (color + hot * p.shooting_star_flare * meteor_light_curve(t))
+                    * point_light(length(d - head), true_radius, pixel_angle, 2.0) * ends;
             }
-            let peak = mix(METEOR_BRIGHTNESS.x, METEOR_BRIGHTNESS.y, pow(look.y, 4.0));
-            result += mix(star_color(look.z), vec3<f32>(1.0), 0.5) * light * peak * p.star_brightness;
+            if p.shooting_star_trail > 0.0 {
+                // The nearest point to `d` of the path burned so far glows
+                // with the light the head had there, fading behind the head.
+                let burned = clamp(atan2(dot(d, m), dot(d, start)), 0.0, head_at);
+                let nearest = start * cos(burned) + m * sin(burned);
+                let passed = burned / rate / duration;
+                var glow = p.shooting_star_trail
+                    * (1.0 + p.shooting_star_flare * meteor_light_curve(passed))
+                    * exp(-METEOR_TRAIN_FADE * (head_at - burned) / train)
+                    * smoothstep(0.0, 0.1, passed);
+                if afterglow > 0.0 {
+                    glow *= exp(-max(age - duration, 0.0) / afterglow);
+                } else {
+                    glow *= 1.0 - smoothstep(0.9, 1.0, t);
+                }
+                light += hot * glow * point_light(length(d - nearest), true_radius, pixel_angle, 1.0);
+            }
+            result += light * p.star_brightness * star_peak(look.y);
         }
     }
     return result;
+}
+
+// The procedural star field's grid: cells in (longitude, latitude), each
+// holding at most one star, about `star_count` over the sky. xy: cells per
+// unit of longitude and latitude (0..1 each), z: the chance a cell has one.
+fn star_grid() -> vec3<f32> {
+    let count = clamp(frame.params.star_count, 0.0, 20000.0);
+    let gx = max(sqrt(max(count, 1.0) * 12.56637), 1.0);
+    let gy = gx * 0.5;
+    return vec3<f32>(gx, gy, clamp(count / max(gx * gy, 1.0), 0.0, 1.0));
+}
+
+// The star in cell `id` of `grid` (`night_radiance` draws the same one): xyz
+// its direction, w its hash's `y` (its size and brightness, `star_radius`,
+// `star_peak`); w < 0 when the cell is empty.
+fn star_in_cell(id: vec2<f32>, grid: vec3<f32>) -> vec4<f32> {
+    let h = hash2(id, frame.params.star_seed);
+    if h.z > grid.z { return vec4<f32>(0.0, 0.0, 0.0, -1.0); }
+    let at = (id + h.xy) / grid.xy;
+    let lon = (at.x - 0.5) * 6.2831853;
+    let lat = (at.y - 0.5) * 3.14159265;
+    return vec4<f32>(cos(lat) * sin(lon), sin(lat), cos(lat) * cos(lon), h.y);
+}
+
+// Constellation lines: every pair of stars is joined, the line's light the
+// product of the pair's brightnesses (raised to `constellation_selectivity`)
+// times a Gaussian of their separation (`constellation_reach`, in star
+// spacings, sqrt(4 pi / star_count)). A pair is drawn until its line would be
+// too faint to see (CONSTELLATION_MIN_WEIGHT), so the web is complete: close
+// bright pairs show, far or faint ones fade out, none is chosen at random.
+// The lines are faint light (`constellation_brightness`) drawn as hairlines
+// (`hairline`), shaded from one star's colour to the other's, stopping short
+// of both stars.
+//
+// Each pixel gathers the stars within the longest visible line of it (every
+// line through it has both ends there) and tests each pair. The window is
+// bounded (CONSTELLATION_MAX_CELLS cells across, at most
+// CONSTELLATION_MAX_STARS stars), so the cost per sky pixel is too; a reach
+// past it is clipped to it.
+// The lines' true half-width, radians.
+const CONSTELLATION_LINE_HALF_WIDTH: f32 = 0.00004;
+const CONSTELLATION_MIN_WEIGHT: f32 = 0.004;
+const CONSTELLATION_MAX_CELLS: i32 = 5;
+const CONSTELLATION_MAX_STARS: u32 = 28u;
+
+fn constellation_radiance(d: vec3<f32>, pixel_angle: f32) -> vec3<f32> {
+    let p = frame.params;
+    let grid = star_grid();
+    let lon = atan2(d.x, d.z) / 6.2831853 + 0.5;
+    let lat = asin(clamp(d.y, -1.0, 1.0)) / 3.14159265 + 0.5;
+    let base = floor(vec2<f32>(lon, lat) * grid.xy);
+    let selectivity = max(p.constellation_selectivity, 0.0);
+    // The Gaussian's width, and the longest line still visible.
+    let sigma = max(p.constellation_reach, 0.05) * sqrt(12.56637 / max(p.star_count, 1.0));
+    let longest = sigma * sqrt(-2.0 * log(CONSTELLATION_MIN_WEIGHT));
+    // That length in cells: a cell is pi / gy high and narrows in longitude
+    // toward the poles.
+    let cell_angle = 3.14159265 / grid.y;
+    let rows = min(i32(ceil(longest / cell_angle)), CONSTELLATION_MAX_CELLS);
+    let squeeze = max(cos((lat - 0.5) * 3.14159265), 0.25);
+    let cols = min(i32(ceil(longest / (cell_angle * squeeze))), CONSTELLATION_MAX_CELLS * 2);
+    // A star too faint to make a visible line even with the brightest
+    // partner is left out.
+    let faintest = pow(CONSTELLATION_MIN_WEIGHT, 1.0 / max(selectivity, 1e-3));
+    var stars: array<vec4<f32>, CONSTELLATION_MAX_STARS>;
+    var hues: array<f32, CONSTELLATION_MAX_STARS>;
+    var count = 0u;
+    for (var y = -rows; y <= rows; y++) {
+        for (var x = -cols; x <= cols; x++) {
+            if count >= CONSTELLATION_MAX_STARS { break; }
+            let id = base + vec2<f32>(f32(x), f32(y));
+            let star = star_in_cell(id, grid);
+            if star.w < faintest || length(star.xyz - d) > longest { continue; }
+            stars[count] = star;
+            hues[count] = hash2(id, p.star_seed).z;
+            count++;
+        }
+    }
+    let gap = pixel_angle * 3.5;
+    var light = vec3<f32>(0.0);
+    for (var i = 0u; i < count; i++) {
+        let a = stars[i];
+        for (var j = i + 1u; j < count; j++) {
+            let b = stars[j];
+            let separation = length(a.xyz - b.xyz);
+            let weight = pow(a.w * b.w, selectivity)
+                * exp(-0.5 * (separation / sigma) * (separation / sigma));
+            if weight < CONSTELLATION_MIN_WEIGHT { continue; }
+            // Only pixels between the two stars: nearer the midpoint than
+            // half the line (cheap), then on the arc's side of each end.
+            if length(d - (a.xyz + b.xyz) * 0.5) > separation * 0.5 + pixel_angle { continue; }
+            let normal = cross(a.xyz, b.xyz);
+            if length(normal) < 1e-7 { continue; }
+            let n = normalize(normal);
+            if dot(cross(a.xyz, d), n) < 0.0 || dot(cross(d, b.xyz), n) < 0.0 { continue; }
+            let across = hairline(abs(dot(d, n)), CONSTELLATION_LINE_HALF_WIDTH, pixel_angle);
+            if across <= 0.0 { continue; }
+            let to_a = length(d - a.xyz);
+            let to_b = length(d - b.xyz);
+            let ends = smoothstep(gap, gap * 2.0, min(to_a, to_b));
+            let color = mix(star_color(hues[i]), star_color(hues[j]), to_a / max(to_a + to_b, 1e-6));
+            light += color * weight * across * ends;
+        }
+    }
+    return light * p.constellation_brightness * p.star_brightness;
 }
 
 // `pixel_angle`: the angle one pixel spans.
@@ -297,17 +435,15 @@ fn night_radiance(d: vec3<f32>, pixel_angle: f32) -> vec3<f32> {
     if p.night_sky_enabled == 0u || dot(d, vec3<f32>(0.0, 1.0, 0.0)) < -0.02 {
         return vec3<f32>(0.0);
     }
-    let count = clamp(p.star_count, 0.0, 20000.0);
-    let gx = max(sqrt(max(count, 1.0) * 12.56637), 1.0);
-    let gy = gx * 0.5;
+    let grid = star_grid();
     let lon = atan2(d.x, d.z) / (2.0 * ATMOSPHERE_PI) + 0.5;
     let lat = asin(clamp(d.y, -1.0, 1.0)) / ATMOSPHERE_PI + 0.5;
-    let cell = vec2<f32>(gx, gy);
+    let cell = grid.xy;
     let q = vec2<f32>(lon, lat) * cell;
     let base = floor(q);
     let cell_uv = fract(q);
     var result = vec3<f32>(0.0);
-    let occupancy = clamp(count / max(gx * gy, 1.0), 0.0, 1.0);
+    let occupancy = grid.z;
     for (var y = -1; y <= 1; y++) {
         for (var x = -1; x <= 1; x++) {
             let id = base + vec2<f32>(f32(x), f32(y));
@@ -316,11 +452,14 @@ fn night_radiance(d: vec3<f32>, pixel_angle: f32) -> vec3<f32> {
             let jitter = h.xy;
             let delta = (vec2<f32>(f32(x), f32(y)) + jitter - cell_uv) / cell;
             let angular = length(vec2<f32>(delta.x * 6.2831853 * cos((lat - 0.5) * 3.14159265), delta.y * 3.14159265));
-            let light = point_light(angular, mix(0.00016, 0.00072, pow(h.y, 3.0)), pixel_angle, 2.0);
+            let light = point_light(angular, star_radius(h.y), pixel_angle, 2.0);
             if light <= 0.0 { continue; }
             let twinkle = select(1.0, 0.58 + 0.42 * sin(frame.cloud_meso_offset.w * p.star_twinkle_speed * (1.5 + h.x * 3.0) + h.z * 6.2831853), h.x < p.star_twinkle_fraction);
-            result += star_color(h.z) * light * twinkle * p.star_brightness * mix(0.35, 1.0, h.y);
+            result += star_color(h.z) * light * twinkle * p.star_brightness * star_peak(h.y);
         }
+    }
+    if p.constellation_lines_enabled != 0u {
+        result += constellation_radiance(d, pixel_angle);
     }
     if p.shooting_stars_enabled != 0u && p.shooting_star_rate > 0.0 {
         result += meteor_radiance(d, pixel_angle);

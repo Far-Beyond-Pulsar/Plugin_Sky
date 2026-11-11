@@ -183,6 +183,24 @@ pub struct AtmosphereRow {
     pub sky_texture_yaw: f32,
     pub sky_texture_pitch: f32,
     pub sky_texture_roll: f32,
+    /// Extra light a shooting star's head adds at its burn peak, in its own
+    /// star brightness (0: the head is only a star).
+    pub shooting_star_flare: f32,
+    /// The train's brightness next to the head, relative to it (0: none).
+    pub shooting_star_trail: f32,
+    /// Seconds (at speed 1) the train keeps glowing after the head is gone
+    /// (0: it goes with the head).
+    pub shooting_star_afterglow: f32,
+    /// How white-hot the flare and train are, 0 (the star's own colour)..1.
+    pub shooting_star_heat: f32,
+    /// Lines join the bright stars into figures.
+    pub constellation_lines_enabled: u32,
+    /// The lines' brightness, relative to `star_brightness`.
+    pub constellation_brightness: f32,
+    /// How far the lines reach, in star spacings (their falloff).
+    pub constellation_reach: f32,
+    /// How strongly bright pairs win over faint ones (0: all alike).
+    pub constellation_selectivity: f32,
 }
 
 // SAFETY: a `#[repr(C)]` bytemuck `Pod` row: no padding bytes, any bit
@@ -194,7 +212,7 @@ unsafe impl pulsar_scenedb::Pod for AtmosphereRow {}
 pub const ATMOSPHERES: helio_core::BufferContract<AtmosphereRow> =
     helio_core::BufferContract::new("atmospheres");
 
-const _: () = assert!(std::mem::size_of::<AtmosphereRow>() == 304);
+const _: () = assert!(std::mem::size_of::<AtmosphereRow>() == 336);
 
 impl Default for AtmosphereRow {
     fn default() -> Self {
@@ -239,6 +257,14 @@ impl AtmosphereRow {
             sky_texture_yaw: 0.0,
             sky_texture_pitch: 0.0,
             sky_texture_roll: 0.0,
+            shooting_star_flare: 3.0,
+            shooting_star_trail: 0.6,
+            shooting_star_afterglow: 0.4,
+            shooting_star_heat: 0.5,
+            constellation_lines_enabled: 0,
+            constellation_brightness: 0.06,
+            constellation_reach: 1.0,
+            constellation_selectivity: 1.5,
             ..Self::clear()
         }
     }
