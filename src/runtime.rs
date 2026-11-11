@@ -1,11 +1,11 @@
 //! What the sky plugin registers for a game (and the editor): every runtime
 //! contribution, grouped by the engine seam it plugs into.
 
-use engine_backend::scene::level_rules::LevelSingletonRegistration;
 use engine_backend::scene::SceneRowsRegistration;
+use engine_backend::scene::level_rules::LevelSingletonRegistration;
 use engine_backend::scene::{ClassSpec, ComponentsBuilder};
 use engine_backend::subsystems::render::RenderFeatureRegistration;
-use sky_component::{AtmosphereComponent, ATMOSPHERE_CLASS, ONE_ATMOSPHERE};
+use sky_component::{ATMOSPHERE_CLASS, AtmosphereComponent, ONE_ATMOSPHERE};
 
 /// Everything the sky plugin registers for a game.
 pub(crate) fn build(p: &mut pulsar_plugins::PluginBuilder) {
@@ -61,10 +61,12 @@ mod tests {
             "features: {:?}",
             features.ids()
         );
-        assert!(pulsar_plugins::registered::<
-            engine_backend::scene::level_rules::LevelSingletonRegistration,
-        >()
-        .any(|rule| rule.class_name == sky_component::ATMOSPHERE_CLASS));
+        assert!(
+            pulsar_plugins::registered::<
+                engine_backend::scene::level_rules::LevelSingletonRegistration,
+            >()
+            .any(|rule| rule.class_name == sky_component::ATMOSPHERE_CLASS)
+        );
     }
 
     /// Every registration of the plugin names this root, so it resolves to
@@ -75,9 +77,10 @@ mod tests {
             .into_iter()
             .filter(|summary| summary.origin == pulsar_plugins::origin!())
             .collect();
-        assert!(ours
-            .iter()
-            .any(|summary| summary.category == "component.class"));
+        assert!(
+            ours.iter()
+                .any(|summary| summary.category == "component.class")
+        );
         for summary in &ours {
             assert_eq!(
                 pulsar_plugins::plugin_of(summary.origin).map(|plugin| plugin.id.as_str()),
