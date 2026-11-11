@@ -184,9 +184,11 @@ pub struct AtmosphereComponent {
     /// Events per minute, visible hemisphere.
     #[property(min = 0.0, max = 20.0, step = 0.01, category = "Shooting Stars")]
     pub shooting_star_rate: f32,
+    /// How fast shooting stars cross the sky; 1 is real sporadic meteors
+    /// (about 0.35 to 1.1 s each).
     #[property(min = 0.05, max = 20.0, step = 0.05, category = "Shooting Stars")]
     pub shooting_star_speed: f32,
-    /// Apparent trail length in radians.
+    /// How far behind the head the glowing train reaches, radians.
     #[property(min = 0.005, max = 0.2, step = 0.005, category = "Shooting Stars")]
     pub shooting_star_length: f32,
     /// Show a 360 degree sky panorama behind the atmosphere, clouds, stars,
