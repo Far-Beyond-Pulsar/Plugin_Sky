@@ -36,3 +36,5 @@ helio-components = { workspace = true }
 pollster = "=0.4.0"
 naga = { version = "30", features = ["wgsl-in"] }
 
+[lints]
+workspace = true
