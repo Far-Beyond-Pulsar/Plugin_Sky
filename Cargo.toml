@@ -46,6 +46,9 @@ tempfile = { workspace = true }
 tracing = { workspace = true }
 image = { workspace = true, features = ["hdr"] }
 zip = { version = "9", default-features = false, features = ["deflate"] }
+# The render graph node tests (`tests/graph_node.rs`).
+helio-graph-asset = { workspace = true }
+helio-presets = { workspace = true }
 
 [lints]
 workspace = true

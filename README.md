@@ -37,6 +37,16 @@ draw phases and api crates.
 - **Its standalone hosts also compose**: `helio-pass-gi` (gi); `helio-light-api, helio-light-host` (lights); `helio-mats` (materials); `helio-mesh-api, helio-mesh-host, helio-pass-forward-lit` (meshes) (demos and GPU tests
   draw a whole scene; the plugin itself does not depend on these).
 
+## Render graph nodes
+
+Every pass the plugin's feature adds to the default pipeline is a node of `.rendergraph` assets, registered from its feature (`registrar.node`, so only while the plugin is enabled) with generated pins, an `Enabled` parameter and the default placement below. A graph naming one while `pulsar.sky` is disabled fails validation with the plugin named. Test: `tests/graph_node.rs`; see Pulsar-Native's `.agents/RENDER_GRAPH.md` ("Plugin nodes").
+
+| Node kind | Title | Default placement |
+|---|---|---|
+| `helio.pass.atmosphere` | Sky: Atmosphere Tables | Prepare slot |
+| `helio.pass.cloud_trace` | Sky: Cloud Trace | Lighting-inputs slot, order 10 |
+| `helio.pass.atmosphere_composite` | Sky: Composite | Lighting slot |
+
 ## Building and testing
 
 Like [Plugin_Physics](https://github.com/Far-Beyond-Pulsar/Plugin_Physics), this plugin's crates are members
