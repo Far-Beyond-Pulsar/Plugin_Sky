@@ -3,43 +3,42 @@
 
 use engine_backend::scene::SceneRowsRegistration;
 use engine_backend::scene::level_rules::LevelSingletonRegistration;
+use engine_backend::scene::{ClassSpec, ComponentsBuilder};
 use engine_backend::subsystems::render::RenderFeatureRegistration;
 use sky_component::{ATMOSPHERE_CLASS, AtmosphereComponent, ONE_ATMOSPHERE};
 
-// ── Component classes ───────────────────────────────────────────────────────
+/// Everything the sky plugin registers for a game.
+pub(crate) fn build(p: &mut pulsar_plugins::PluginBuilder) {
+    // ── Component classes ───────────────────────────────────────────────────
 
-pulsar_world_registry::submit_world_component!(AtmosphereComponent);
+    p.components()
+        .class::<AtmosphereComponent>(ClassSpec::default());
 
-// ── Rendering ───────────────────────────────────────────────────────────────
+    // ── Rendering ───────────────────────────────────────────────────────────
 
-// The atmosphere's source rows and the row join that places a planet's
-// atmosphere at its owner.
-inventory::submit! {
-    SceneRowsRegistration {
-        origin: pulsar_plugins::origin!(),
+    // The atmosphere's source rows and the row join that places a planet's
+    // atmosphere at its owner.
+    p.add(SceneRowsRegistration {
+        origin: p.origin(),
         name: "sky.rows",
         register_columns: sky_component::register_columns,
         derivation: Some(sky_component::derivation),
-    }
-}
+    });
 
-// The atmosphere's tables, the clouds and the sky composite; they read no
-// project settings through the renderer config.
-inventory::submit! {
-    RenderFeatureRegistration {
-        origin: pulsar_plugins::origin!(),
+    // The atmosphere's tables, the clouds and the sky composite; they read no
+    // project settings through the renderer config.
+    p.add(RenderFeatureRegistration {
+        origin: p.origin(),
         features: sky_component::render_features,
         configure: |config| config,
-    }
-}
+    });
 
-// ── Scene ───────────────────────────────────────────────────────────────────
+    // ── Scene ───────────────────────────────────────────────────────────────
 
-// A level has one sky (#1057): the atmosphere pass draws the first enabled
-// row, so a second would only fight the first.
-inventory::submit! {
-    LevelSingletonRegistration {
-        origin: pulsar_plugins::origin!(),
+    // A level has one sky (#1057): the atmosphere pass draws the first
+    // enabled row, so a second would only fight the first.
+    p.add(LevelSingletonRegistration {
+        origin: p.origin(),
         class_name: ATMOSPHERE_CLASS,
         refusal: ONE_ATMOSPHERE,
         instances: sky_component::atmospheres,
@@ -48,7 +47,7 @@ inventory::submit! {
         default_is: true,
         enabled_only: false,
         edits_checked: false,
-    }
+    });
 }
 
 #[cfg(test)]
@@ -63,9 +62,10 @@ mod tests {
             features.ids()
         );
         assert!(
-            inventory::iter::<engine_backend::scene::level_rules::LevelSingletonRegistration>
-                .into_iter()
-                .any(|rule| rule.class_name == sky_component::ATMOSPHERE_CLASS)
+            pulsar_plugins::registered::<
+                engine_backend::scene::level_rules::LevelSingletonRegistration,
+            >()
+            .any(|rule| rule.class_name == sky_component::ATMOSPHERE_CLASS)
         );
     }
 

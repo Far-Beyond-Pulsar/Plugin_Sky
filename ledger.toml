@@ -53,7 +53,7 @@ status = "verified"
 [[buffer]]
 key = "atmosphere_sources"
 producers = ["AtmosphereSourceRow"]
-consumers = []
+consumers = ["sky_component"]
 owner = "sky_component"
 disposition = "keep: AtmosphereComponent in its owner's space, derived on every write; the sky plugin's row join reads it into atmospheres"
 target_contract = "Phase 4; 09-component-structure-and-graph-boundary.md"
@@ -75,7 +75,7 @@ status = "verified"
 [[pass]]
 crate = "helio-pass-sky"
 in_default_graph = false
-reads = ["atmospheres"]
+reads = ["atmospheres", "directional_lights"]
 owner = "helio-presets (mapping); helio-pass-sky (algorithm)"
 disposition = "runs in the editor graph. The sky is the level's one AtmosphereComponent (#1057), read through the environment join (atmospheres), with the sun from the scene join's lights; without one the sky is the graph's black background. The procedural SkyPass and its sky_components rows are retired"
 target_contract = "Phase 6; 03-gpu-reflection-and-rendering.md"

@@ -4,12 +4,13 @@
 use sky_editor::{level_editor, panoramas};
 use ui_level_editor::extend::{CreateEntry, LevelComponentSection, StarterContent};
 
-// ── Level editor ────────────────────────────────────────────────────────────
+/// Everything the sky plugin registers for the editor.
+pub(crate) fn build(p: &mut pulsar_plugins::PluginBuilder) {
+    // ── Level editor ────────────────────────────────────────────────────────
 
-// The Create menu's sky (refused when the level has one).
-inventory::submit! {
-    CreateEntry {
-        origin: pulsar_plugins::origin!(),
+    // The Create menu's sky (refused when the level has one).
+    p.add(CreateEntry {
+        origin: p.origin(),
         id: "sky",
         menu_label: Some(level_editor::menu_label),
         environment_label: None,
@@ -17,16 +18,14 @@ inventory::submit! {
         offered: None,
         order: 300,
         create: level_editor::create_sky,
-    }
-}
+    });
 
-// Tools > Starter Content: the CC0 Deep-Space panoramas, added to the
-// project's assets (no level object). The shell downloads the pinned archive
-// with progress and cancel and checks the SHA-256; the editor crate extracts
-// and writes.
-inventory::submit! {
-    StarterContent {
-        origin: pulsar_plugins::origin!(),
+    // Tools > Starter Content: the CC0 Deep-Space panoramas, added to the
+    // project's assets (no level object). The shell downloads the pinned
+    // archive with progress and cancel and checks the SHA-256; the editor
+    // crate extracts and writes.
+    p.add(StarterContent {
+        origin: p.origin(),
         id: "sky.deep_space_panoramas",
         title: "Sky Panoramas (CC0 Deep-Space)",
         description: "Galaxy and nebula equirect HDRs by Toolbench, for the Sky's Texture",
@@ -38,14 +37,12 @@ inventory::submit! {
         destination: panoramas::PROJECT_DIR,
         order: 0,
         install: panoramas::install,
-    }
-}
+    });
 
-// World Settings' sky section: the level's sky, or a button that creates it
-// with a sun.
-inventory::submit! {
-    LevelComponentSection {
-        origin: pulsar_plugins::origin!(),
+    // World Settings' sky section: the level's sky, or a button that creates
+    // it with a sun.
+    p.add(LevelComponentSection {
+        origin: p.origin(),
         title: "Sky",
         sidebar_title: "Sky and Atmosphere",
         sidebar_missing: "Missing · creates a sky",
@@ -56,5 +53,5 @@ inventory::submit! {
         create_label: "Create Sky",
         create: level_editor::create_sky_with_sun,
         describe: level_editor::describe,
-    }
+    });
 }
