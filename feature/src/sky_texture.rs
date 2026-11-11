@@ -203,6 +203,9 @@ pub fn decode(code: u32) -> Result<SkyImage, String> {
     Ok(build_image(w, h, data))
 }
 
+// Helio-layer feature crate (below Pulsar, so no `engine_fs`): the sky
+// component registers a real file path, and this polls it for hot reload.
+#[allow(clippy::disallowed_methods)]
 fn modified(code: u32) -> Option<SystemTime> {
     std::fs::metadata(file_path(code)?).ok()?.modified().ok()
 }
