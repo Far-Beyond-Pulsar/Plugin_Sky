@@ -207,6 +207,15 @@ fn point_light(angular: f32, true_radius: f32, pixel_angle: f32, dims: f32) -> f
     return (core + halo) * pow(true_radius / radius, dims);
 }
 
+// The light across a hairline `angular` radians from its centre: a tent at
+// most a pixel wide (`pixel_angle`) with no halo, 1 at the centre for a line
+// drawn at its true half-width. A thinner line keeps its light per unit length
+// (the tent's area): it dims rather than thickens.
+fn hairline(angular: f32, true_half_width: f32, pixel_angle: f32) -> f32 {
+    let half = max(true_half_width, pixel_angle * 0.5);
+    return max(1.0 - angular / half, 0.0) * (true_half_width / half);
+}
+
 // Shooting stars. The head is one of the night's stars, drawn exactly as the
 // others, crossing a short great-circle path. On top of it, each optional
 // (0 turns it off): a flare at the burn peak (`shooting_star_flare`), a train
@@ -343,17 +352,17 @@ fn star_in_cell(id: vec2<f32>, grid: vec3<f32>) -> vec4<f32> {
 // spacings, sqrt(4 pi / star_count)). A pair is drawn until its line would be
 // too faint to see (CONSTELLATION_MIN_WEIGHT), so the web is complete: close
 // bright pairs show, far or faint ones fade out, none is chosen at random.
-// The lines are faint light (`constellation_brightness`), the stars'
-// `point_light` across them at a sub-pixel true width (dimmer, not thicker,
-// at low resolution), shaded from one star's colour to the other's, stopping
-// short of both stars.
+// The lines are faint light (`constellation_brightness`) drawn as hairlines
+// (`hairline`), shaded from one star's colour to the other's, stopping short
+// of both stars.
 //
 // Each pixel gathers the stars within the longest visible line of it (every
 // line through it has both ends there) and tests each pair. The window is
 // bounded (CONSTELLATION_MAX_CELLS cells across, at most
 // CONSTELLATION_MAX_STARS stars), so the cost per sky pixel is too; a reach
 // past it is clipped to it.
-const CONSTELLATION_LINE_RADIUS: f32 = 0.00010;
+// The lines' true half-width, radians.
+const CONSTELLATION_LINE_HALF_WIDTH: f32 = 0.00004;
 const CONSTELLATION_MIN_WEIGHT: f32 = 0.004;
 const CONSTELLATION_MAX_CELLS: i32 = 5;
 const CONSTELLATION_MAX_STARS: u32 = 28u;
@@ -408,7 +417,7 @@ fn constellation_radiance(d: vec3<f32>, pixel_angle: f32) -> vec3<f32> {
             if length(normal) < 1e-7 { continue; }
             let n = normalize(normal);
             if dot(cross(a.xyz, d), n) < 0.0 || dot(cross(d, b.xyz), n) < 0.0 { continue; }
-            let across = point_light(abs(dot(d, n)), CONSTELLATION_LINE_RADIUS, pixel_angle, 1.0);
+            let across = hairline(abs(dot(d, n)), CONSTELLATION_LINE_HALF_WIDTH, pixel_angle);
             if across <= 0.0 { continue; }
             let to_a = length(d - a.xyz);
             let to_b = length(d - b.xyz);
