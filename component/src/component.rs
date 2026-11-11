@@ -179,6 +179,22 @@ pub struct AtmosphereComponent {
     pub star_twinkle_speed: f32,
     #[property(min = 0.0, max = 65535.0, step = 1.0, category = "Night Sky")]
     pub star_seed: u32,
+    /// Join stars to their neighbours with faint lines, strongest between
+    /// bright, close pairs, so the brightest stars draw the figures.
+    #[property(category = "Night Sky")]
+    pub constellation_lines: bool,
+    /// Brightness of the lines, relative to the star brightness.
+    #[property(min = 0.0, max = 2.0, step = 0.01, category = "Night Sky")]
+    pub constellation_brightness: f32,
+    /// How far lines reach: their falloff with the stars' separation, in
+    /// star spacings. Every pair is joined until its line fades out; low
+    /// keeps only close neighbours visible.
+    #[property(min = 0.05, max = 3.0, step = 0.05, category = "Night Sky")]
+    pub constellation_reach: f32,
+    /// How strongly bright pairs win over faint ones: 0 draws every pair
+    /// alike, higher leaves only the brightest pairs' lines visible.
+    #[property(min = 0.0, max = 8.0, step = 0.1, category = "Night Sky")]
+    pub constellation_selectivity: f32,
     #[property(category = "Shooting Stars")]
     pub shooting_stars_enabled: bool,
     /// Events per minute, visible hemisphere.
@@ -188,9 +204,24 @@ pub struct AtmosphereComponent {
     /// (about 0.35 to 1.1 s each).
     #[property(min = 0.05, max = 20.0, step = 0.05, category = "Shooting Stars")]
     pub shooting_star_speed: f32,
-    /// How far behind the head the glowing train reaches, radians.
+    /// How far behind the head the train reaches, radians.
     #[property(min = 0.005, max = 0.2, step = 0.005, category = "Shooting Stars")]
     pub shooting_star_length: f32,
+    /// The head is always drawn exactly as a star. The flare adds light at
+    /// its burn peak, in multiples of that star's brightness; 0 turns it off.
+    #[property(min = 0.0, max = 20.0, step = 0.1, category = "Shooting Stars")]
+    pub shooting_star_flare: f32,
+    /// Brightness of the train next to the head, relative to the head;
+    /// 0 turns the train off.
+    #[property(min = 0.0, max = 2.0, step = 0.01, category = "Shooting Stars")]
+    pub shooting_star_trail: f32,
+    /// Seconds the train keeps glowing after the head is gone (at speed 1);
+    /// 0 makes it go with the head.
+    #[property(min = 0.0, max = 5.0, step = 0.05, category = "Shooting Stars")]
+    pub shooting_star_afterglow: f32,
+    /// How white-hot the flare and train look: 0 keeps the star's own colour.
+    #[property(min = 0.0, max = 1.0, step = 0.01, category = "Shooting Stars")]
+    pub shooting_star_heat: f32,
     /// Show a 360 degree sky panorama behind the atmosphere, clouds, stars,
     /// moon and shooting stars. It does not replace or disable any of them,
     /// and it only decorates the sky: scene lighting comes from the
@@ -290,6 +321,14 @@ impl AtmosphereComponent {
             shooting_star_rate: row.shooting_star_rate,
             shooting_star_speed: row.shooting_star_speed,
             shooting_star_length: row.shooting_star_length,
+            shooting_star_flare: row.shooting_star_flare,
+            shooting_star_trail: row.shooting_star_trail,
+            shooting_star_afterglow: row.shooting_star_afterglow,
+            shooting_star_heat: row.shooting_star_heat,
+            constellation_lines: row.constellation_lines_enabled != 0,
+            constellation_brightness: row.constellation_brightness,
+            constellation_reach: row.constellation_reach,
+            constellation_selectivity: row.constellation_selectivity,
             sky_texture_enabled: row.sky_texture_source != sky_source::NONE,
             sky_texture_file: sky_texture::file_path(row.sky_texture_source)
                 .map(|path| TextureSrc::new(path.to_string_lossy()))
@@ -428,6 +467,14 @@ impl AtmosphereComponent {
             shooting_star_rate: self.shooting_star_rate.max(0.0),
             shooting_star_speed: self.shooting_star_speed.max(0.05),
             shooting_star_length: self.shooting_star_length.clamp(0.005, 0.2),
+            shooting_star_flare: self.shooting_star_flare.max(0.0),
+            shooting_star_trail: self.shooting_star_trail.max(0.0),
+            shooting_star_afterglow: self.shooting_star_afterglow.max(0.0),
+            shooting_star_heat: self.shooting_star_heat.clamp(0.0, 1.0),
+            constellation_lines_enabled: u32::from(self.constellation_lines),
+            constellation_brightness: self.constellation_brightness.max(0.0),
+            constellation_reach: self.constellation_reach.clamp(0.05, 3.0),
+            constellation_selectivity: self.constellation_selectivity.clamp(0.0, 8.0),
             // The words once reserved for a moon carry the sky texture layer.
             // Sky emitters (the moon) are authored by LightComponents.
             sky_texture_source: self.sky_texture_source(),

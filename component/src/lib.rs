@@ -37,7 +37,9 @@ pub const ATMOSPHERE_SOURCES_BUFFER: &str = "atmosphere_sources";
 /// ground albedo and ozone width (`ground`), and planet and atmosphere
 /// radii, sun size and enabled flag (`shell`; `enabled` 0 when the authored
 /// component is disabled), the cloud layer (`clouds`) and its weather
-/// (`weather`), followed by the night-sky controls (`night`). The placement
+/// (`weather`), followed by the night-sky controls (`night`), the shooting
+/// stars' flare, train, afterglow and heat (`meteors`) and the constellation
+/// lines (`constellations`; its first word a `u32`). The placement
 /// and enabled words are `u32`s, kept as bits.
 #[derive(SceneStore, bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug, PartialEq)]
 #[repr(C)]
@@ -57,6 +59,10 @@ pub struct AtmosphereSourceRow {
     pub weather: [f32; 16],
     #[gpu]
     pub night: [f32; 16],
+    #[gpu]
+    pub meteors: [f32; 4],
+    #[gpu]
+    pub constellations: [f32; 4],
 }
 
 impl AtmosphereSourceRow {
@@ -177,8 +183,8 @@ mod tests {
 
     #[test]
     fn rows_have_the_documented_word_counts() {
-        assert_eq!(std::mem::size_of::<AtmosphereSourceRow>(), 76 * 4);
-        assert_eq!(std::mem::size_of::<helio_pass_sky::AtmosphereRow>(), 76 * 4);
+        assert_eq!(std::mem::size_of::<AtmosphereSourceRow>(), 84 * 4);
+        assert_eq!(std::mem::size_of::<helio_pass_sky::AtmosphereRow>(), 84 * 4);
         assert_eq!(
             std::mem::size_of::<AtmosphereSourceRow>() as u64,
             helio_pass_sky::scene_rows::ATMOSPHERE_SOURCE_ROW_BYTES
