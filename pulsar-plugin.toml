@@ -6,7 +6,14 @@ id = "pulsar.sky"
 name = "Sky"
 description = "The level's sky: the atmosphere component (air, sun disc, clouds and weather), its row and the renderer feature that draws it and publishes the sky's lighting inputs"
 enabled_by_default = true
-requires = []
+provides = [
+  { id = "pulsar.sky.rows", kind = "buffer", members = ["atmospheres"] },
+]
+# Optional: the atmosphere runs without lights on the frame's stand-in.
+requires = [
+  { id = "pulsar.lights.rows", optional = true },
+  { id = "pulsar.lights.api", optional = true },
+]
 
 # The plugin's root crate (the package in this directory): the one place it
 # registers everything it contributes. A game links it without its `editor`

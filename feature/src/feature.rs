@@ -26,6 +26,8 @@ impl Feature for SkyFeature {
         registrar.swappable::<AtmospherePass>();
         registrar.swappable::<CloudTracePass>();
         registrar.swappable::<AtmosphereCompositePass>();
+        registrar.consumes(crate::ATMOSPHERES);
+        registrar.consumes(helio_light_api::DIRECTIONAL_LIGHTS_ROW);
         registrar.node(
             NodeDescriptor::new(
                 "helio.pass.atmosphere",
