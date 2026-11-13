@@ -1,4 +1,5 @@
-//!use atmosphere
+//!use frame_sky
+//!use sky_layers
 // The planet's weather (`clouds` module docs): a cube map over the
 // directions from the planet's centre, the large scales of the clouds'
 // cover, which `clouds_common.wgsl` refines with the mesoscale cells, the
@@ -26,7 +27,7 @@
 // Every scale is noise over the sphere itself (never a tile), so nothing
 // repeats. The weather drifts with the westerlies outside the tropics and
 // the trades inside them, and its systems grow and decay, over a period of
-// WEATHER_PERIOD_S (`frame.cloud_groups_offset.w` is its phase), so the
+// WEATHER_PERIOD_S (`layers.cloud_groups_offset.w` is its phase), so the
 // clock never loses precision.
 //
 // Planets too small to hold a weather system (a few synoptic scales round)
@@ -40,9 +41,10 @@ struct WeatherBake {
     _pad: vec2<u32>,
 }
 
-@group(0) @binding(0) var<storage, read> frame: AtmosphereFrame;
+@group(0) @binding(0) var<storage, read> frame: SkyFrame;
 @group(0) @binding(1) var<uniform> bake: WeatherBake;
 @group(0) @binding(2) var weather_out: texture_storage_2d_array<rgba16float, write>;
+@group(0) @binding(3) var<storage, read> layers: SkyLayersFrame;
 
 const PI: f32 = 3.14159265;
 // Systems per cell of the lattice they are scattered on, its side in
@@ -278,24 +280,25 @@ fn planet_weather(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = textureDimensions(weather_out).x;
     let row = id.y * bake.stride + bake.phase;
     if id.x >= size || row >= size || id.z >= 6u { return; }
-    if !atmosphere_has_clouds(frame) { return; }
+    if !sky_has_clouds(frame, layers) { return; }
     let p = frame.params;
+    let l = layers.params;
     // While the weather holds still, rows are written only when the map is
     // rebuilt whole.
-    if bake.stride > 1u && p.cloud_evolution <= 0.0 { return; }
+    if bake.stride > 1u && l.cloud_evolution <= 0.0 { return; }
     var w: Weather;
     w.radius = p.bottom_radius;
-    let pole = p.cloud_pole;
+    let pole = l.cloud_pole;
     w.pole = select(vec3<f32>(0.0, 1.0, 0.0), normalize(pole), dot(pole, pole) > 1e-8);
-    w.cells = max(round(p.cloud_circulation_cells), 1.0);
+    w.cells = max(round(l.cloud_circulation_cells), 1.0);
     w.cell_latitude = 0.5 * PI / w.cells;
-    w.synoptic = max(p.cloud_synoptic_scale, 1.0);
+    w.synoptic = max(l.cloud_synoptic_scale, 1.0);
     // None on planets too small to hold a few systems.
     let room = smoothstep(1.0, 4.0, w.radius / w.synoptic);
-    w.circulation = clamp(p.cloud_circulation, 0.0, 1.0) * room;
-    w.storminess = clamp(p.cloud_storminess, 0.0, 1.0) * room;
-    w.seed = p.cloud_seed;
-    w.phase = frame.cloud_groups_offset.w;
+    w.circulation = clamp(l.cloud_circulation, 0.0, 1.0) * room;
+    w.storminess = clamp(l.cloud_storminess, 0.0, 1.0) * room;
+    w.seed = l.cloud_seed;
+    w.phase = layers.cloud_groups_offset.w;
     let n = cube_direction(id.z, vec2<u32>(id.x, row), size);
     let lat = asin(clamp(dot(n, w.pole), -1.0, 1.0));
     let tropics = 1.0 - smoothstep(0.7, 1.1, abs(lat) / w.cell_latitude);

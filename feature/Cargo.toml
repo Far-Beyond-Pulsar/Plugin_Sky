@@ -18,6 +18,8 @@ helio-components = { workspace = true, optional = true }
 pulsar_scenedb_derive = { workspace = true, optional = true }
 helio-scene-join = { workspace = true }
 helio-frame-api = { workspace = true }
+# The sky texture decodes as a job on the host's task system.
+helio-tasks = { workspace = true }
 helio-feature-api = { workspace = true }
 pulsar_reflection = { workspace = true }
 helio-core = { workspace = true }

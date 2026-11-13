@@ -1,7 +1,8 @@
 //!use helio_prelude
-//!use atmosphere
+//!use frame_sky
+//!use sky_layers
 //!use light_list
-// Atmosphere LUT kernels (see atmosphere_common.wgsl). Every kernel reads
+// Atmosphere LUT kernels (see frame_sky.wgsl). Every kernel reads
 // the frame `resolve` wrote; all leave their outputs untouched while no
 // atmosphere is active.
 
@@ -17,13 +18,16 @@ struct Resolve {
 }
 
 @group(0) @binding(0) var<uniform> resolve_input: Resolve;
-@group(0) @binding(1) var<storage, read> atmospheres: array<AtmosphereParams>;
+// The sky's atmosphere rows (`helio_pass_sky::AtmosphereRow`).
+@group(0) @binding(1) var<storage, read> atmospheres: array<AtmosphereRow>;
 // The lights' directional lights (`helio_light_api::DIRECTIONAL_LIGHTS`,
 // `//!use light_list`), the first the primary sun.
 @group(0) @binding(2) var<storage, read> directional: DirectionalLights;
 @group(0) @binding(3) var<storage, read> cameras: array<Camera, 2>;
-@group(0) @binding(4) var<storage, read_write> frame: AtmosphereFrame;
+@group(0) @binding(4) var<storage, read_write> frame: SkyFrame;
 @group(0) @binding(5) var lut_sampler: sampler;
+// The sky's own layers, resolved beside the frame's sky.
+@group(0) @binding(6) var<storage, read_write> layers: SkyLayersFrame;
 
 @group(1) @binding(0) var transmittance_out: texture_storage_2d<rgba16float, write>;
 @group(1) @binding(1) var transmittance_lut: texture_2d<f32>;
@@ -40,11 +44,14 @@ struct Resolve {
 fn resolve() {
     frame.planet = vec4<f32>(0.0);
     var found = false;
-    var params: AtmosphereParams;
+    var params: SkyMedium;
+    var own: SkyLayers;
     for (var i = 0u; i < arrayLength(&atmospheres); i++) {
         let a = atmospheres[i];
-        if a.enabled != 0u && a.top_radius > a.bottom_radius && a.bottom_radius > 0.0 {
-            params = a;
+        if a.medium.enabled != 0u && a.medium.top_radius > a.medium.bottom_radius
+            && a.medium.bottom_radius > 0.0 {
+            params = a.medium;
+            own = a.layers;
             found = true;
             break;
         }
@@ -52,7 +59,7 @@ fn resolve() {
     if !found { return; }
     // Keep authored atmosphere data intact while resolving a cloudless XR sky.
     if resolve_input.clock.y > 0.5 {
-        params.clouds_enabled = 0u;
+        own.clouds_enabled = 0u;
     }
     // `frame.sun` is only the angular-table reference axis. All illumination
     // below is evaluated by summing the actual directional lights.
@@ -89,18 +96,19 @@ fn resolve() {
     frame.sun_illuminance = vec4<f32>(illuminance, range);
     frame.eye = vec4<f32>(eye, 0.0);
     frame.params = params;
+    layers.params = own;
     // The wind carries the clouds' noise; each offset wraps to its noise's
     // period, so it never loses precision however long the clock runs.
     // The planet's weather's phase advances by the clock times the
     // evolution's time lapse.
-    let drift = params.cloud_wind * (resolve_input.clock.x * 0.001);
-    let phase = fract(frame.cloud_groups_offset.w + resolve_input.clock.x * max(params.cloud_evolution, 0.0) / WEATHER_PERIOD_S);
-    frame.cloud_groups_offset = vec4<f32>(fract(frame.cloud_groups_offset.xyz - drift / max(params.cloud_weather_scale, 1e-3)), phase);
-    let meso = drift / max(params.cloud_mesoscale_scale, 1e-3);
-    frame.cloud_meso_offset = vec4<f32>(fract(frame.cloud_meso_offset.xyz - CLOUD_MESO_TURN_A * meso), frame.cloud_meso_offset.w + resolve_input.clock.x);
-    frame.cloud_meso_fine_offset = vec4<f32>(fract(frame.cloud_meso_fine_offset.xyz - CLOUD_MESO_TURN_B * (meso * CLOUD_MESO_RATIO)), 0.0);
-    frame.cloud_shape_offset = vec4<f32>(fract(frame.cloud_shape_offset.xyz - drift / max(params.cloud_shape_scale, 1e-3)), 0.0);
-    frame.cloud_detail_offset = vec4<f32>(fract(frame.cloud_detail_offset.xyz - drift / max(params.cloud_detail_scale, 1e-3)), 0.0);
+    let drift = own.cloud_wind * (resolve_input.clock.x * 0.001);
+    let phase = fract(layers.cloud_groups_offset.w + resolve_input.clock.x * max(own.cloud_evolution, 0.0) / WEATHER_PERIOD_S);
+    layers.cloud_groups_offset = vec4<f32>(fract(layers.cloud_groups_offset.xyz - drift / max(own.cloud_weather_scale, 1e-3)), phase);
+    let meso = drift / max(own.cloud_mesoscale_scale, 1e-3);
+    layers.cloud_meso_offset = vec4<f32>(fract(layers.cloud_meso_offset.xyz - CLOUD_MESO_TURN_A * meso), layers.cloud_meso_offset.w + resolve_input.clock.x);
+    layers.cloud_meso_fine_offset = vec4<f32>(fract(layers.cloud_meso_fine_offset.xyz - CLOUD_MESO_TURN_B * (meso * CLOUD_MESO_RATIO)), 0.0);
+    layers.cloud_shape_offset = vec4<f32>(fract(layers.cloud_shape_offset.xyz - drift / max(own.cloud_shape_scale, 1e-3)), 0.0);
+    layers.cloud_detail_offset = vec4<f32>(fract(layers.cloud_detail_offset.xyz - drift / max(own.cloud_detail_scale, 1e-3)), 0.0);
 }
 
 fn atmosphere_active() -> bool {
@@ -109,11 +117,11 @@ fn atmosphere_active() -> bool {
 
 // The shared integrators, bound to this pass's LUTs.
 fn sun_transmittance(r: f32, mu_s: f32) -> vec3<f32> {
-    return atmosphere_sun_transmittance_lut(frame.params, transmittance_lut, lut_sampler, r, mu_s);
+    return sky_sun_transmittance_lut(frame.params, transmittance_lut, lut_sampler, r, mu_s);
 }
 
 fn integrate(sun: vec3<f32>, o: vec3<f32>, d: vec3<f32>, t0: f32, t1: f32, steps: f32) -> Scattering {
-    return atmosphere_integrate(frame.params, sun, transmittance_lut, multi_scattering_lut,
+    return sky_integrate(frame.params, sun, transmittance_lut, multi_scattering_lut,
         lut_sampler, o, d, t0, t1, steps, true);
 }
 
@@ -173,7 +181,7 @@ fn multi_scattering_kernel(@builtin(global_invocation_id) id: vec3<u32>) {
             let step_t = exp(-m.extinction * dt);
             let integral = (vec3<f32>(1.0) - step_t) / max(m.extinction, vec3<f32>(1e-7));
             let lit = sun_transmittance(rx, dot(x / rx, sun));
-            light += throughput * m.scattering * lit / (4.0 * ATMOSPHERE_PI) * integral;
+            light += throughput * m.scattering * lit / (4.0 * SKY_PI) * integral;
             bounce += throughput * m.scattering * integral;
             throughput *= step_t;
         }
@@ -181,7 +189,7 @@ fn multi_scattering_kernel(@builtin(global_invocation_id) id: vec3<u32>) {
             let x = o + d * t_max;
             let n_ground = normalize(x);
             let lit = sun_transmittance(p.bottom_radius, dot(n_ground, sun));
-            light += throughput * lit * max(dot(n_ground, sun), 0.0) * p.ground_albedo / ATMOSPHERE_PI;
+            light += throughput * lit * max(dot(n_ground, sun), 0.0) * p.ground_albedo / SKY_PI;
         }
         // Uniform phase over the sphere: each direction weighs 1 / count.
         second += light / f32(directions);
@@ -201,7 +209,7 @@ fn sky_view_kernel(@builtin(global_invocation_id) id: vec3<u32>) {
     let angles = sky_view_angles(p, r, uv);
     let basis = sky_view_basis(eye / r, frame.sun.xyz);
     let d = basis * vec3<f32>(sin(angles.x) * cos(angles.y), cos(angles.x), sin(angles.x) * sin(angles.y));
-    let segment = atmosphere_segment(frame.params, eye, d, true);
+    let segment = sky_segment(frame.params, eye, d, true);
     var radiance = vec3<f32>(0.0);
     if segment.y > segment.x {
         for (var i = 0u; i < frame.directional_light_count.x; i++) {
@@ -217,7 +225,7 @@ fn sky_view_kernel(@builtin(global_invocation_id) id: vec3<u32>) {
                 let n = normalize(x);
                 let mu_s = dot(n, light_dir);
                 radiance += s.transmittance * energy * sun_transmittance(p.bottom_radius, mu_s)
-                    * max(mu_s, 0.0) * p.ground_albedo / ATMOSPHERE_PI;
+                    * max(mu_s, 0.0) * p.ground_albedo / SKY_PI;
             }
         }
     }
@@ -231,11 +239,11 @@ fn aerial_kernel(@builtin(global_invocation_id) id: vec3<u32>) {
     if !atmosphere_active() || any(vec2<f32>(id.xy) >= vec2<f32>(AERIAL_SLICES)) { return; }
     let camera = cameras[0];
     let uv = (vec2<f32>(id.xy) + 0.5) / AERIAL_SLICES;
-    let d = normalize(atmosphere_view_ray(camera.view, camera.proj, vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0)));
+    let d = normalize(sky_view_ray(camera.view, camera.proj, vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0)));
     let eye = frame.eye.xyz;
     let range = frame.sun_illuminance.w;
     // Geometry the volume is sampled for may lie below the analytic ground.
-    let segment = atmosphere_segment(frame.params, eye, d, false);
+    let segment = sky_segment(frame.params, eye, d, false);
     var radiance = vec3<f32>(0.0);
     var throughput = vec3<f32>(1.0);
     var t_prev = 0.0;
@@ -300,7 +308,7 @@ fn irradiance_kernel(@builtin(local_invocation_index) li: u32) {
     partial[li] = sh;
     workgroupBarrier();
     if li != 0u || !atmosphere_active() { return; }
-    let weight = 4.0 * ATMOSPHERE_PI / f32(total);
+    let weight = 4.0 * SKY_PI / f32(total);
     // Cosine-lobe convolution (Ramamoorthi & Hanrahan), then / pi.
     let band = array<f32, 9>(1.0, 2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0, 0.25, 0.25, 0.25, 0.25, 0.25);
     for (var c = 0u; c < 9u; c++) {
@@ -310,7 +318,7 @@ fn irradiance_kernel(@builtin(local_invocation_index) li: u32) {
     }
 }
 
-// The sky's irradiance table (`AtmosphereFrame::sky_table`): one workgroup
+// The sky's irradiance table (`SkyFrame::sky_table`): one workgroup
 // per entry (altitude, sun cosine), its 64 lanes two directions each of a
 // Fibonacci sphere: the sky (single and multiple scattering) and the lit
 // ground below the horizon, through the air, for a unit sun; projected
@@ -339,16 +347,16 @@ fn sky_table_kernel(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocat
             let q = sqrt(max(1.0 - zc * zc, 0.0));
             // y is up: the sphere's axis.
             let d = vec3<f32>(q * cos(a), zc, q * sin(a));
-            let segment = atmosphere_segment(p, o, d, true);
+            let segment = sky_segment(p, o, d, true);
             var l = vec3<f32>(0.0);
             if segment.y > segment.x {
-                let sc = atmosphere_integrate(p, sun, transmittance_lut, multi_scattering_lut, lut_sampler, o, d, segment.x, segment.y, 12.0, true);
+                let sc = sky_integrate(p, sun, transmittance_lut, multi_scattering_lut, lut_sampler, o, d, segment.x, segment.y, 12.0, true);
                 l = sc.radiance;
                 if segment.z > 0.5 {
                     let x = o + d * segment.y;
                     let g = normalize(x);
                     let mu = dot(g, sun);
-                    l += sc.transmittance * sun_transmittance(p.bottom_radius, mu) * max(mu, 0.0) * p.ground_albedo / ATMOSPHERE_PI;
+                    l += sc.transmittance * sun_transmittance(p.bottom_radius, mu) * max(mu, 0.0) * p.ground_albedo / SKY_PI;
                 }
             }
             sh[0] += l * 0.282095;
@@ -362,7 +370,7 @@ fn sky_table_kernel(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocat
     table_partial[li] = sh;
     workgroupBarrier();
     if li != 0u { return; }
-    let weight = 4.0 * ATMOSPHERE_PI / f32(total);
+    let weight = 4.0 * SKY_PI / f32(total);
     let band = array<f32, 6>(1.0, 2.0 / 3.0, 2.0 / 3.0, 0.25, 0.25, 0.25);
     for (var c = 0u; c < 6u; c++) {
         var sum = vec3<f32>(0.0);

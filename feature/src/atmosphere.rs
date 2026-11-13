@@ -16,11 +16,15 @@
 //! table over height and sun angle) are rebuilt only when the rows change;
 //! the camera- and sun-dependent ones every frame. It publishes:
 //!
-//! - `atmosphere_frame` (buffer, `AtmosphereFrame` in
-//!   `shaders/atmosphere_common.wgsl`): planet, sun, irradiance. Deferred
-//!   lighting attenuates the sun through the air at each pixel and lights
-//!   ambient with the sky's irradiance.
-//! - `atmosphere_transmittance`, `atmosphere_sky_view`,
+//! - the frame's sky (`helio_frame_api::lighting::sky`): `sky_frame`
+//!   (buffer, `SkyFrame` in `frame_sky.wgsl`: the medium, planet, suns,
+//!   irradiance), `sky_table` and `sky_view`. Deferred lighting attenuates
+//!   the sun through the air at each pixel and lights ambient with the sky's
+//!   irradiance; fog, GI, water and terrain read the medium.
+//! - [`SKY_LAYERS`] (buffer, `SkyLayersFrame` in `shaders/sky_layers.wgsl`):
+//!   the sky's own clouds, weather, night sky and panorama, which only its
+//!   passes read.
+//! - `atmosphere_transmittance`, `atmosphere_multi_scattering`,
 //!   `atmosphere_aerial` (textures).
 //!
 //! The row's cloud fields describe its clouds ([`CloudLayer`], the
@@ -48,10 +52,33 @@ use crate::clouds::{
 };
 
 pub use helio_frame_api::lighting::sky::{
-    ATMOSPHERE_FRAME, ATMOSPHERE_FRAME_BYTES, ATMOSPHERE_MARKER, ATMOSPHERE_SKY_TABLE,
-    ATMOSPHERE_SKY_TABLE_BYTES, ATMOSPHERE_SKY_TABLE_MARKER, ATMOSPHERE_SKY_TABLE_SNIPPET,
-    ATMOSPHERE_SKY_VIEW, ATMOSPHERE_SNIPPET, SKY_TABLE_ENTRIES,
+    SKY_FRAME, SKY_FRAME_BYTES, SKY_MARKER, SKY_SNIPPET, SKY_TABLE, SKY_TABLE_BYTES,
+    SKY_TABLE_ENTRIES, SKY_TABLE_MARKER, SKY_TABLE_SNIPPET, SKY_VIEW,
 };
+/// Graph key of the sky's own layers (`SkyLayersFrame` in
+/// `shaders/sky_layers.wgsl`): its clouds, the planet's weather, its night
+/// sky and panorama, and where the wind has carried the clouds. Resolved
+/// with the frame's sky ([`SKY_FRAME`]) from the same row; read only by the
+/// sky's passes.
+pub const SKY_LAYERS: &str = "sky_layers";
+/// Bytes of `SkyLayersFrame`: the row's layers, then five wind offsets.
+pub const SKY_LAYERS_BYTES: u64 = SKY_LAYERS_PARAMS_BYTES + 5 * 16;
+/// Bytes of the row's layers (`SkyLayers`): what follows the frame's medium
+/// in an [`AtmosphereRow`].
+pub const SKY_LAYERS_PARAMS_BYTES: u64 = 192;
+/// Bytes of the frame's medium (`SkyMedium`) at the head of an
+/// [`AtmosphereRow`].
+pub const SKY_MEDIUM_BYTES: u64 = 112;
+/// Marker opting a sky shader into [`SKY_LAYERS_SNIPPET`].
+pub const SKY_LAYERS_MARKER: &str = "//!use sky_layers";
+/// The sky's own layers in WGSL (`SkyLayers`, `SkyLayersFrame`,
+/// `AtmosphereRow`, `sky_has_clouds`); after [`SKY_SNIPPET`].
+pub const SKY_LAYERS_SNIPPET: helio_core::shader::ShaderSnippet =
+    helio_core::wgsl_snippet!(SKY_LAYERS_MARKER, "shaders/sky_layers.wgsl");
+const _: () = assert!(
+    std::mem::size_of::<AtmosphereRow>() as u64 == SKY_MEDIUM_BYTES + SKY_LAYERS_PARAMS_BYTES
+);
+
 pub const ATMOSPHERE_TRANSMITTANCE: &str = "atmosphere_transmittance";
 pub const ATMOSPHERE_MULTI_SCATTERING: &str = "atmosphere_multi_scattering";
 pub const ATMOSPHERE_AERIAL: &str = "atmosphere_aerial";
@@ -528,7 +555,7 @@ impl CloudLayer {
 
 const TRANSMITTANCE: [u32; 2] = [256, 64];
 const MULTI_SCATTERING: u32 = 32;
-const SKY_VIEW: [u32; 2] = [192, 108];
+const SKY_VIEW_SIZE: [u32; 2] = [192, 108];
 const AERIAL: u32 = 32;
 
 #[repr(C)]
@@ -632,6 +659,8 @@ pub struct AtmospherePass {
     resolve: wgpu::ComputePipeline,
     kernels: Vec<Kernel>,
     frame: wgpu::Buffer,
+    /// The sky's own layers (`SKY_LAYERS`), resolved with the frame.
+    layers: wgpu::Buffer,
     uniform: wgpu::Buffer,
     no_rows: wgpu::Buffer,
     sampler: wgpu::Sampler,
@@ -660,7 +689,11 @@ impl AtmospherePass {
             device,
             "Atmosphere LUTs",
             helio_core::include_wgsl!("shaders/atmosphere_luts.wgsl"),
-            &[ATMOSPHERE_SNIPPET, helio_light_api::LIGHT_LIST_SNIPPET],
+            &[
+                SKY_SNIPPET,
+                SKY_LAYERS_SNIPPET,
+                helio_light_api::LIGHT_LIST_SNIPPET,
+            ],
         );
         let compute = wgpu::ShaderStages::COMPUTE;
         let storage = |read_only| wgpu::BufferBindingType::Storage { read_only };
@@ -678,6 +711,7 @@ impl AtmospherePass {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                buffer_entry(6, compute, storage(false)),
             ],
         });
         let d2 = wgpu::TextureViewDimension::D2;
@@ -697,7 +731,7 @@ impl AtmospherePass {
         let sky_view = lut(
             device,
             "Atmosphere sky view",
-            [SKY_VIEW[0], SKY_VIEW[1], 1],
+            [SKY_VIEW_SIZE[0], SKY_VIEW_SIZE[1], 1],
             wgpu::TextureDimension::D2,
         );
         let aerial = lut(
@@ -708,7 +742,7 @@ impl AtmospherePass {
         );
         let sky_table = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Atmosphere sky table"),
-            size: ATMOSPHERE_SKY_TABLE_BYTES,
+            size: SKY_TABLE_BYTES,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::UNIFORM,
             mapped_at_creation: false,
         });
@@ -795,7 +829,11 @@ impl AtmospherePass {
                     (sampled_texture(3, compute, d2), view(&multi)),
                     (storage_texture(4, d2), view(&sky_view)),
                 ],
-                [SKY_VIEW[0].div_ceil(8), SKY_VIEW[1].div_ceil(8), 1],
+                [
+                    SKY_VIEW_SIZE[0].div_ceil(8),
+                    SKY_VIEW_SIZE[1].div_ceil(8),
+                    1,
+                ],
             ),
             kernel(
                 "aerial_kernel",
@@ -830,14 +868,20 @@ impl AtmospherePass {
         let resolve = pipeline(None, "resolve");
         let frame = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Atmosphere frame"),
-            size: ATMOSPHERE_FRAME_BYTES,
+            size: SKY_FRAME_BYTES,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::UNIFORM
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        let clouds = CloudVolumes::new(device, &frame);
+        let layers = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Sky layers"),
+            size: SKY_LAYERS_BYTES,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let clouds = CloudVolumes::new(device, &frame, &layers);
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Atmosphere resolve"),
             size: std::mem::size_of::<ResolveUniform>() as u64,
@@ -868,6 +912,7 @@ impl AtmospherePass {
             resolve,
             kernels,
             frame,
+            layers,
             uniform,
             no_rows,
             sampler,
@@ -914,11 +959,12 @@ impl RenderPass for AtmospherePass {
 
     fn writes(&self) -> &'static [&'static str] {
         &[
-            ATMOSPHERE_FRAME,
-            ATMOSPHERE_SKY_TABLE,
+            SKY_FRAME,
+            SKY_LAYERS,
+            SKY_TABLE,
             ATMOSPHERE_TRANSMITTANCE,
             ATMOSPHERE_MULTI_SCATTERING,
-            ATMOSPHERE_SKY_VIEW,
+            SKY_VIEW,
             ATMOSPHERE_AERIAL,
             CLOUD_SHADOW_MAP,
             CLOUD_SHADOW_FRAME,
@@ -1014,6 +1060,10 @@ impl RenderPass for AtmospherePass {
                         binding: 5,
                         resource: wgpu::BindingResource::Sampler(&self.sampler),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: self.layers.as_entire_binding(),
+                    },
                 ],
             }));
             self.shared_key = Some(key);
@@ -1080,13 +1130,15 @@ impl RenderPass for AtmospherePass {
     fn publish<'a>(&self, frame: &mut helio_core::ResourceRegistry<'a>) {
         // Pass-owned resources, handed over for the frame.
         let buffer: &'a wgpu::Buffer = unsafe { std::mem::transmute(&self.frame) };
-        frame.write_buffer(ResourceKey::new(ATMOSPHERE_FRAME), buffer, "Atmosphere");
+        frame.write_buffer(ResourceKey::new(SKY_FRAME), buffer, "Atmosphere");
+        let layers: &'a wgpu::Buffer = unsafe { std::mem::transmute(&self.layers) };
+        frame.write_buffer(ResourceKey::new(SKY_LAYERS), layers, "Atmosphere");
         let table: &'a wgpu::Buffer = unsafe { std::mem::transmute(&self.sky_table) };
-        frame.write_buffer(ResourceKey::new(ATMOSPHERE_SKY_TABLE), table, "Atmosphere");
+        frame.write_buffer(ResourceKey::new(SKY_TABLE), table, "Atmosphere");
         for (key, view) in [
             (ATMOSPHERE_TRANSMITTANCE, &self.transmittance),
             (ATMOSPHERE_MULTI_SCATTERING, &self.multi_scattering),
-            (ATMOSPHERE_SKY_VIEW, &self.sky_view),
+            (SKY_VIEW, &self.sky_view),
             (ATMOSPHERE_AERIAL, &self.aerial),
         ] {
             let view: &'a wgpu::TextureView = unsafe { std::mem::transmute(view) };
@@ -1127,7 +1179,7 @@ impl AtmosphereCompositePass {
             device,
             "Atmosphere composite",
             helio_core::include_wgsl!("shaders/atmosphere_composite.wgsl"),
-            &[ATMOSPHERE_SNIPPET],
+            &[SKY_SNIPPET, SKY_LAYERS_SNIPPET],
         );
         let fragment = wgpu::ShaderStages::FRAGMENT;
         let read_only = wgpu::BufferBindingType::Storage { read_only: true };
@@ -1177,6 +1229,7 @@ impl AtmosphereCompositePass {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                buffer_entry(13, fragment, read_only),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1286,10 +1339,11 @@ impl RenderPass for AtmosphereCompositePass {
         &[
             helio_frame_api::color::SCENE_COLOR,
             helio_frame_api::gbuffer::DEPTH,
-            ATMOSPHERE_FRAME,
+            SKY_FRAME,
+            SKY_LAYERS,
             ATMOSPHERE_TRANSMITTANCE,
             ATMOSPHERE_MULTI_SCATTERING,
-            ATMOSPHERE_SKY_VIEW,
+            SKY_VIEW,
             ATMOSPHERE_AERIAL,
             ATMOSPHERE_CLOUDS,
             ATMOSPHERE_CLOUD_DEPTH,
@@ -1354,15 +1408,17 @@ impl RenderPass for AtmosphereCompositePass {
         let registry = ctx.registry;
         let (
             Some(frame),
+            Some(layers),
             Some(transmittance),
             Some(multi_scattering),
             Some(sky_view),
             Some(aerial),
         ) = (
-            registry.get::<&wgpu::Buffer>(ResourceKey::new(ATMOSPHERE_FRAME)),
+            registry.get::<&wgpu::Buffer>(ResourceKey::new(SKY_FRAME)),
+            registry.get::<&wgpu::Buffer>(ResourceKey::new(SKY_LAYERS)),
             registry.get::<&wgpu::TextureView>(ResourceKey::new(ATMOSPHERE_TRANSMITTANCE)),
             registry.get::<&wgpu::TextureView>(ResourceKey::new(ATMOSPHERE_MULTI_SCATTERING)),
-            registry.get::<&wgpu::TextureView>(ResourceKey::new(ATMOSPHERE_SKY_VIEW)),
+            registry.get::<&wgpu::TextureView>(ResourceKey::new(SKY_VIEW)),
             registry.get::<&wgpu::TextureView>(ResourceKey::new(ATMOSPHERE_AERIAL)),
         )
         else {
@@ -1475,6 +1531,10 @@ impl RenderPass for AtmosphereCompositePass {
                     wgpu::BindGroupEntry {
                         binding: 12,
                         resource: wgpu::BindingResource::Sampler(&self.sky_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 13,
+                        resource: layers.as_entire_binding(),
                     },
                 ],
             },

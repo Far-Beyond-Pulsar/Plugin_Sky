@@ -104,43 +104,44 @@ fn cloud_logistic(x: f32) -> f32 {
     return 1.0 / (1.0 + exp(-clamp(x, -30.0, 30.0)));
 }
 
-fn cloud_layer_params(frame: AtmosphereFrame) -> CloudLayerParams {
+fn cloud_layer_params(frame: SkyFrame, layers: SkyLayersFrame) -> CloudLayerParams {
     let p = frame.params;
+    let l = layers.params;
     var c: CloudLayerParams;
     c.planet_radius = p.bottom_radius;
-    c.inner = p.bottom_radius + p.cloud_bottom;
-    c.outer = p.bottom_radius + max(p.cloud_top, p.cloud_bottom + 1e-3);
+    c.inner = p.bottom_radius + l.cloud_bottom;
+    c.outer = p.bottom_radius + max(l.cloud_top, l.cloud_bottom + 1e-3);
     c.inv_thickness = 1.0 / (c.outer - c.inner);
-    c.coverage_logit = cloud_logit(p.cloud_coverage);
-    c.covered = p.cloud_coverage > 0.0;
-    c.kind = clamp(p.cloud_type, 0.0, 1.0);
-    c.extinction = max(p.cloud_extinction, 0.0);
-    c.erosion = clamp(p.cloud_erosion, 0.0, 1.0);
-    c.inv_groups = 1.0 / max(p.cloud_weather_scale, 1e-3);
-    c.inv_meso = 1.0 / max(p.cloud_mesoscale_scale, 1e-3);
-    c.inv_shape = 1.0 / max(p.cloud_shape_scale, 1e-3);
-    c.inv_detail = 1.0 / max(p.cloud_detail_scale, 1e-3);
+    c.coverage_logit = cloud_logit(l.cloud_coverage);
+    c.covered = l.cloud_coverage > 0.0;
+    c.kind = clamp(l.cloud_type, 0.0, 1.0);
+    c.extinction = max(l.cloud_extinction, 0.0);
+    c.erosion = clamp(l.cloud_erosion, 0.0, 1.0);
+    c.inv_groups = 1.0 / max(l.cloud_weather_scale, 1e-3);
+    c.inv_meso = 1.0 / max(l.cloud_mesoscale_scale, 1e-3);
+    c.inv_shape = 1.0 / max(l.cloud_shape_scale, 1e-3);
+    c.inv_detail = 1.0 / max(l.cloud_detail_scale, 1e-3);
     c.meso_share = CLOUD_MESO_SHARE * smoothstep(1.0, 4.0, p.bottom_radius * c.inv_meso);
     c.groups_share = 1.0 - c.meso_share;
     c.groups_texels = c.inv_groups * CLOUD_WEATHER_TEXELS;
     c.meso_texels = c.inv_meso * CLOUD_WEATHER_TEXELS;
     c.shape_texels = c.inv_shape * CLOUD_SHAPE_TEXELS;
-    c.detail_lod_bias = log2((max(p.cloud_shape_scale, 1e-3) / CLOUD_SHAPE_TEXELS)
-        / (max(p.cloud_detail_scale, 1e-3) / CLOUD_DETAIL_TEXELS));
-    c.groups_offset = frame.cloud_groups_offset.xyz;
-    c.meso_offset = frame.cloud_meso_offset.xyz;
-    c.meso_fine_offset = frame.cloud_meso_fine_offset.xyz;
-    c.shape_offset = frame.cloud_shape_offset.xyz;
-    c.detail_offset = frame.cloud_detail_offset.xyz;
-    c.albedo = clamp(p.cloud_albedo, vec3<f32>(0.0), vec3<f32>(1.0));
+    c.detail_lod_bias = log2((max(l.cloud_shape_scale, 1e-3) / CLOUD_SHAPE_TEXELS)
+        / (max(l.cloud_detail_scale, 1e-3) / CLOUD_DETAIL_TEXELS));
+    c.groups_offset = layers.cloud_groups_offset.xyz;
+    c.meso_offset = layers.cloud_meso_offset.xyz;
+    c.meso_fine_offset = layers.cloud_meso_fine_offset.xyz;
+    c.shape_offset = layers.cloud_shape_offset.xyz;
+    c.detail_offset = layers.cloud_detail_offset.xyz;
+    c.albedo = clamp(l.cloud_albedo, vec3<f32>(0.0), vec3<f32>(1.0));
     // The volume's last mip: one texel, its whole spread.
     c.field = textureLoad(cloud_weather, vec3<i32>(0), i32(textureNumLevels(cloud_weather)) - 1);
-    c.cirrus_radius = p.bottom_radius + max(p.cloud_cirrus_height, p.cloud_top + 0.1);
-    c.cirrus = clamp(p.cloud_cirrus, 0.0, 1.0);
-    let pole = p.cloud_pole;
+    c.cirrus_radius = p.bottom_radius + max(l.cloud_cirrus_height, l.cloud_top + 0.1);
+    c.cirrus = clamp(l.cloud_cirrus, 0.0, 1.0);
+    let pole = l.cloud_pole;
     c.pole = select(vec3<f32>(0.0, 1.0, 0.0), normalize(pole), dot(pole, pole) > 1e-8);
-    c.voxel = max(p.cloud_voxel_size, 0.0);
-    c.fill = clamp(p.cloud_voxel_fill, 0.0, 1.0);
+    c.voxel = max(l.cloud_voxel_size, 0.0);
+    c.fill = clamp(l.cloud_voxel_fill, 0.0, 1.0);
     return c;
 }
 
@@ -388,7 +389,7 @@ fn cirrus_crossing(c: CloudLayerParams, o: vec3<f32>, d: vec3<f32>) -> f32 {
 // Henyey-Greenstein.
 fn cloud_hg(cos_theta: f32, g: f32) -> f32 {
     let g2 = g * g;
-    return (1.0 - g2) / (4.0 * ATMOSPHERE_PI * pow(max(1.0 + g2 - 2.0 * g * cos_theta, 1e-4), 1.5));
+    return (1.0 - g2) / (4.0 * SKY_PI * pow(max(1.0 + g2 - 2.0 * g * cos_theta, 1e-4), 1.5));
 }
 
 // Light scattered towards the eye at a point whose optical depth towards
