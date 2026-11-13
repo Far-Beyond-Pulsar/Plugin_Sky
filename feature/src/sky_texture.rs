@@ -335,16 +335,16 @@ impl SkyTextureCache {
             }
             None => {
                 tracing::info!(
-                    "sky texture {code:#x}: decoding on a worker thread ({:?})",
+                    "sky texture {code:#x}: decoding on a worker ({:?})",
                     file_path(code)
                 );
                 let (sender, receiver) = mpsc::channel();
-                std::thread::Builder::new()
-                    .name("sky-texture-load".into())
-                    .spawn(move || {
+                helio_tasks::submit(
+                    helio_tasks::JobSpec::new("Decode the sky texture").owner("sky"),
+                    move |_| {
                         let _ = sender.send(decode(code));
-                    })
-                    .ok();
+                    },
+                );
                 self.pending = Some(Pending {
                     code,
                     modified: modified(code),

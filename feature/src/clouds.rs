@@ -44,8 +44,8 @@ use helio_core::graph::ResourceBuilder;
 use helio_core::{PassContext, PrepareContext, RenderPass, ResourceKey, Result as HelioResult};
 
 use crate::atmosphere::{
-    ATMOSPHERE_AERIAL, ATMOSPHERE_FRAME, ATMOSPHERE_MULTI_SCATTERING, ATMOSPHERE_SKY_TABLE,
-    ATMOSPHERE_SKY_TABLE_SNIPPET, ATMOSPHERE_SNIPPET, ATMOSPHERE_TRANSMITTANCE,
+    ATMOSPHERE_AERIAL, ATMOSPHERE_MULTI_SCATTERING, ATMOSPHERE_TRANSMITTANCE, SKY_FRAME,
+    SKY_LAYERS, SKY_LAYERS_SNIPPET, SKY_SNIPPET, SKY_TABLE, SKY_TABLE_SNIPPET,
 };
 
 use helio_frame_api::lighting::sun_transmittance::{
@@ -263,7 +263,9 @@ pub(crate) struct CloudVolumes {
 }
 
 impl CloudVolumes {
-    pub(crate) fn new(device: &wgpu::Device, frame: &wgpu::Buffer) -> Self {
+    /// The clouds' volumes and their weather and shadow kernels over the
+    /// frame's sky (`frame`) and the sky's own layers (`layers`).
+    pub(crate) fn new(device: &wgpu::Device, frame: &wgpu::Buffer, layers: &wgpu::Buffer) -> Self {
         let noise = helio_core::shader::module_with(
             device,
             "Cloud noise",
@@ -386,7 +388,7 @@ impl CloudVolumes {
             device,
             "Cloud planet weather",
             helio_core::include_wgsl!("shaders/cloud_planet_weather.wgsl"),
-            &[ATMOSPHERE_SNIPPET],
+            &[SKY_SNIPPET, SKY_LAYERS_SNIPPET],
         );
         let bake_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Cloud planet weather"),
@@ -398,6 +400,7 @@ impl CloudVolumes {
                     PLANET_WEATHER_FORMAT,
                     wgpu::TextureViewDimension::D2Array,
                 ),
+                buffer(3, wgpu::BufferBindingType::Storage { read_only: true }),
             ],
         });
         let bake_params = device.create_buffer(&wgpu::BufferDescriptor {
@@ -416,6 +419,7 @@ impl CloudVolumes {
                     (0, frame.as_entire_binding()),
                     (1, bake_params.as_entire_binding()),
                     (2, wgpu::BindingResource::TextureView(&planet_faces)),
+                    (3, layers.as_entire_binding()),
                 ],
             ),
             groups: [
@@ -429,7 +433,12 @@ impl CloudVolumes {
             device,
             "Cloud shadow map",
             helio_core::include_wgsl!("shaders/cloud_shadow_map.wgsl"),
-            &[ATMOSPHERE_SNIPPET, CLOUDS_SNIPPET, CLOUD_SHADOW_SNIPPET],
+            &[
+                SKY_SNIPPET,
+                SKY_LAYERS_SNIPPET,
+                CLOUDS_SNIPPET,
+                CLOUD_SHADOW_SNIPPET,
+            ],
         );
         let shadow_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Cloud shadow map"),
@@ -442,6 +451,7 @@ impl CloudVolumes {
                 storage_texture(5, CLOUD_SHADOW_FORMAT, wgpu::TextureViewDimension::D2),
                 buffer(6, wgpu::BufferBindingType::Storage { read_only: false }),
                 sampled(8, wgpu::TextureViewDimension::Cube),
+                buffer(9, wgpu::BufferBindingType::Storage { read_only: true }),
             ],
         });
         let shadow_map = device
@@ -483,6 +493,7 @@ impl CloudVolumes {
                 (5, view(&shadow_map)),
                 (6, shadow_frame.as_entire_binding()),
                 (8, view(&planet_weather)),
+                (9, layers.as_entire_binding()),
             ],
         );
         let shadow = [
@@ -712,9 +723,10 @@ impl CloudTracePass {
             "Cloud trace",
             helio_core::include_wgsl!("shaders/cloud_trace.wgsl"),
             &[
-                ATMOSPHERE_SNIPPET,
+                SKY_SNIPPET,
+                SKY_LAYERS_SNIPPET,
                 CLOUDS_SNIPPET,
-                ATMOSPHERE_SKY_TABLE_SNIPPET,
+                SKY_TABLE_SNIPPET,
                 CLOUD_SHADOW_SNIPPET,
             ],
         );
@@ -748,6 +760,7 @@ impl CloudTracePass {
                 storage_texture(13, CLOUD_FORMAT, d2),
                 storage_texture(14, CLOUD_DEPTH_FORMAT, d2),
                 sampled(25, wgpu::TextureViewDimension::Cube),
+                buffer(26, read_only),
             ],
         });
         let reconstruct_layout =
@@ -858,8 +871,9 @@ impl RenderPass for CloudTracePass {
     fn reads(&self) -> &'static [&'static str] {
         &[
             helio_frame_api::gbuffer::DEPTH,
-            ATMOSPHERE_FRAME,
-            ATMOSPHERE_SKY_TABLE,
+            SKY_FRAME,
+            SKY_LAYERS,
+            SKY_TABLE,
             ATMOSPHERE_TRANSMITTANCE,
             ATMOSPHERE_MULTI_SCATTERING,
             ATMOSPHERE_AERIAL,
@@ -911,8 +925,9 @@ impl RenderPass for CloudTracePass {
             .get::<bool>(ResourceKey::new("atmosphere_active"))
             .unwrap_or(false);
         let resources = (
-            registry.get::<&wgpu::Buffer>(ResourceKey::new(ATMOSPHERE_FRAME)),
-            registry.get::<&wgpu::Buffer>(ResourceKey::new(ATMOSPHERE_SKY_TABLE)),
+            registry.get::<&wgpu::Buffer>(ResourceKey::new(SKY_FRAME)),
+            registry.get::<&wgpu::Buffer>(ResourceKey::new(SKY_LAYERS)),
+            registry.get::<&wgpu::Buffer>(ResourceKey::new(SKY_TABLE)),
             registry.texture_view(ResourceKey::new(ATMOSPHERE_TRANSMITTANCE)),
             registry.texture_view(ResourceKey::new(ATMOSPHERE_MULTI_SCATTERING)),
             registry.texture_view(ResourceKey::new(ATMOSPHERE_AERIAL)),
@@ -925,6 +940,7 @@ impl RenderPass for CloudTracePass {
         );
         let (
             Some(frame),
+            Some(layers),
             Some(sky_table),
             Some(transmittance),
             Some(multi),
@@ -970,7 +986,12 @@ impl RenderPass for CloudTracePass {
             shape.clone(),
             detail.clone(),
         ];
-        let buffers = vec![ctx.camera.clone(), frame.clone(), sky_table.clone()];
+        let buffers = vec![
+            ctx.camera.clone(),
+            frame.clone(),
+            sky_table.clone(),
+            layers.clone(),
+        ];
         if self
             .trace_group
             .as_ref()
@@ -998,6 +1019,7 @@ impl RenderPass for CloudTracePass {
                     (13, view(&targets.trace_color)),
                     (14, view(&targets.trace_depth)),
                     (25, view(planet_weather)),
+                    (26, layers.as_entire_binding()),
                 ],
             );
             self.trace_group = Some((views, buffers, group));

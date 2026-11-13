@@ -1,4 +1,5 @@
-//!use atmosphere
+//!use frame_sky
+//!use sky_layers
 //!use atmosphere_clouds
 //!use sun_transmittance
 // The clouds' shadow map (`cloud_shadow.wgsl`), built each frame after the
@@ -9,7 +10,7 @@
 // the billows, the far one (texels too large for them) takes the share of
 // the sun the weather's cover lets through.
 
-@group(0) @binding(0) var<storage, read> frame: AtmosphereFrame;
+@group(0) @binding(0) var<storage, read> frame: SkyFrame;
 @group(0) @binding(1) var cloud_weather: texture_3d<f32>;
 @group(0) @binding(2) var cloud_shape: texture_3d<f32>;
 @group(0) @binding(3) var cloud_detail: texture_3d<f32>;
@@ -19,6 +20,7 @@
 // Declared for the shared lookup, which this module never calls.
 @group(0) @binding(7) var sun_transmittance_map: texture_2d<f32>;
 @group(0) @binding(8) var cloud_planet_weather: texture_cube<f32>;
+@group(0) @binding(9) var<storage, read> layers: SkyLayersFrame;
 
 // Half the near cascade's extent (km), at most the layer's radius.
 const CLOUD_SHADOW_HALF_KM: f32 = 16.0;
@@ -44,11 +46,11 @@ fn lattice_centre(eye: vec3<f32>, right: vec3<f32>, up: vec3<f32>, texel: f32) -
 
 @compute @workgroup_size(1)
 fn cloud_shadow_resolve() {
-    if !atmosphere_has_clouds(frame) {
+    if !sky_has_clouds(frame, layers) {
         sun_transmittance_frame.right = vec4<f32>(0.0);
         return;
     }
-    let c = cloud_layer_params(frame);
+    let c = cloud_layer_params(frame, layers);
     let forward = -frame.sun.xyz;
     let reference = select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(forward.z) > 0.9);
     let right = normalize(cross(reference, forward));
@@ -92,7 +94,7 @@ fn cirrus_shadow(c: CloudLayerParams, o: vec3<f32>, sun: vec3<f32>, texel: f32) 
 fn cloud_shadow_kernel(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = textureDimensions(shadow_out);
     if any(id.xy >= size) || sun_transmittance_frame.right.w < 0.5 { return; }
-    let c = cloud_layer_params(frame);
+    let c = cloud_layer_params(frame, layers);
     let side = size.y;
     let is_far = id.x >= side;
     let cascade = select(sun_transmittance_frame.near, sun_transmittance_frame.far, is_far);
