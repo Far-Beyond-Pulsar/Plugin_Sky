@@ -44,6 +44,7 @@ impl Feature for SkyFeature {
             )
             .with_param(ParamDesc::boolean("enabled", "Enabled", true))
             .with_generated_pins()
+            .once_per_frame()
             .in_slot(Slot::Prepare, 0),
         );
         registrar.node(
