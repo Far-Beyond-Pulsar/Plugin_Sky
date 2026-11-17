@@ -18,10 +18,7 @@ use common::{
     new_scene_db_with_gpu_mirror, plane_mesh, point_light, spawn_light, spawn_material, spawn_mesh,
     spawn_object, spawn_sky, update_light,
 };
-use helio::{
-    required_experimental_features, required_wgpu_features, required_wgpu_limits, Camera, Renderer,
-    RendererConfig,
-};
+use helio::{Camera, Renderer, RendererConfig};
 use pulsar_scenedb::SceneDb;
 
 use winit::{
@@ -53,7 +50,6 @@ struct AppState {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
     device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
     surface_format: wgpu::TextureFormat,
     renderer: Renderer,
     last_frame: std::time::Instant,
@@ -115,7 +111,7 @@ impl ApplicationHandler for App {
 
         let config = RendererConfig::new(size.width, size.height, surface_format);
         let mut scene_db = new_scene_db_with_gpu_mirror(&device, &queue);
-        let mut renderer = build_default_renderer_with_context(&scene_db, &mut graphics, config);
+        let renderer = build_default_renderer_with_context(&scene_db, &mut graphics, config);
         let surface = graphics.surface;
 
         let mat = spawn_material(
@@ -193,7 +189,6 @@ impl ApplicationHandler for App {
             window,
             surface,
             device,
-            queue,
             surface_format,
             renderer,
             scene_db,
