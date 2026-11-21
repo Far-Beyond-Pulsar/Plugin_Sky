@@ -10,17 +10,23 @@
 //! [`AtmospherePass`] resolves the row and the sun on the GPU each frame and
 //! builds the lookup tables: transmittance, multiple scattering, the sky
 //! seen from the camera, the aerial-perspective volume (light scattered
-//! between the camera and each pixel) and the sky's diffuse irradiance as
-//! spherical harmonics. The tables that depend only on the row's
-//! parameters (transmittance, multiple scattering and the sky irradiance
-//! table over height and sun angle) are rebuilt only when the rows change;
-//! the camera- and sun-dependent ones every frame. It publishes:
+//! between the camera and each pixel), the sky's diffuse irradiance at the
+//! camera as spherical harmonics, and the sky anywhere in the air by height
+//! and sun angle: its radiance by direction (the radiance table) and the
+//! irradiance that radiance gives a surface (the irradiance table). The
+//! tables that depend only on the row's parameters (transmittance,
+//! multiple scattering, the radiance and irradiance tables) are rebuilt
+//! only when the rows change; the camera- and sun-dependent ones every
+//! frame. It publishes:
 //!
 //! - the frame's sky (`helio_frame_api::lighting::sky`): `sky_frame`
 //!   (buffer, `SkyFrame` in `frame_sky.wgsl`: the medium, planet, suns,
-//!   irradiance), `sky_table` and `sky_view`. Deferred lighting attenuates
-//!   the sun through the air at each pixel and lights ambient with the sky's
-//!   irradiance; fog, GI, water and terrain read the medium.
+//!   irradiance), `sky_table`, `sky_radiance` and `sky_view`. Deferred
+//!   lighting attenuates the sun through the air at each pixel and lights
+//!   ambient with the irradiance table; rays that meet nothing (GI's
+//!   probes, the reference) take the radiance table, which from the eye is
+//!   the sky the composite draws from `sky_view`; fog, GI, water and
+//!   terrain read the medium.
 //! - [`SKY_LAYERS`] (buffer, `SkyLayersFrame` in `shaders/sky_layers.wgsl`):
 //!   the sky's own clouds, weather, night sky and panorama, which only its
 //!   passes read.
@@ -52,8 +58,9 @@ use crate::clouds::{
 };
 
 pub use helio_frame_api::lighting::sky::{
-    SKY_FRAME, SKY_FRAME_BYTES, SKY_MARKER, SKY_SNIPPET, SKY_TABLE, SKY_TABLE_BYTES,
-    SKY_TABLE_ENTRIES, SKY_TABLE_MARKER, SKY_TABLE_SNIPPET, SKY_VIEW,
+    SKY_FRAME, SKY_FRAME_BYTES, SKY_MARKER, SKY_RADIANCE, SKY_RADIANCE_FORMAT, SKY_RADIANCE_MARKER,
+    SKY_RADIANCE_SIZE, SKY_RADIANCE_SNIPPET, SKY_SNIPPET, SKY_TABLE, SKY_TABLE_BYTES,
+    SKY_TABLE_ENTRIES, SKY_TABLE_MARKER, SKY_TABLE_SNIPPET, SKY_VIEW, SKY_VIEW_SIZE,
 };
 /// Graph key of the sky's own layers (`SkyLayersFrame` in
 /// `shaders/sky_layers.wgsl`): its clouds, the planet's weather, its night
@@ -555,7 +562,6 @@ impl CloudLayer {
 
 const TRANSMITTANCE: [u32; 2] = [256, 64];
 const MULTI_SCATTERING: u32 = 32;
-const SKY_VIEW_SIZE: [u32; 2] = [192, 108];
 const AERIAL: u32 = 32;
 
 #[repr(C)]
@@ -669,6 +675,7 @@ pub struct AtmospherePass {
     sky_view: wgpu::TextureView,
     aerial: wgpu::TextureView,
     sky_table: wgpu::Buffer,
+    sky_radiance: wgpu::TextureView,
     rows: helio_core::SceneBufferLiveness,
     active: bool,
     xr_mode: bool,
@@ -740,6 +747,22 @@ impl AtmospherePass {
             [AERIAL; 3],
             wgpu::TextureDimension::D3,
         );
+        let sky_radiance = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("Atmosphere sky radiance"),
+                size: wgpu::Extent3d {
+                    width: SKY_RADIANCE_SIZE[0],
+                    height: SKY_RADIANCE_SIZE[1],
+                    depth_or_array_layers: SKY_RADIANCE_SIZE[2],
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D3,
+                format: SKY_RADIANCE_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&Default::default());
         let sky_table = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Atmosphere sky table"),
             size: SKY_TABLE_BYTES,
@@ -853,10 +876,29 @@ impl AtmospherePass {
                 [1, 1, 1],
             ),
             params_only(kernel(
-                "sky_table_kernel",
+                "sky_radiance_kernel",
                 &[
                     (sampled_texture(1, compute, d2), view(&transmittance)),
                     (sampled_texture(3, compute, d2), view(&multi)),
+                    (
+                        storage_texture(8, wgpu::TextureViewDimension::D3),
+                        view(&sky_radiance),
+                    ),
+                ],
+                [
+                    SKY_RADIANCE_SIZE[0].div_ceil(8),
+                    SKY_RADIANCE_SIZE[1].div_ceil(8),
+                    SKY_RADIANCE_SIZE[2],
+                ],
+            )),
+            // After the radiance table: the irradiance is its integral.
+            params_only(kernel(
+                "sky_table_kernel",
+                &[
+                    (
+                        sampled_texture(9, compute, wgpu::TextureViewDimension::D3),
+                        view(&sky_radiance),
+                    ),
                     (
                         buffer_entry(7, compute, storage(false)),
                         sky_table.as_entire_binding(),
@@ -921,6 +963,7 @@ impl AtmospherePass {
             sky_view,
             aerial,
             sky_table,
+            sky_radiance,
             rows: helio_core::SceneBufferLiveness::with_row_predicate(|row| {
                 // `enabled` is the last word.
                 row.len() >= 112 && row[108..112].iter().any(|&b| b != 0)
@@ -962,6 +1005,7 @@ impl RenderPass for AtmospherePass {
             SKY_FRAME,
             SKY_LAYERS,
             SKY_TABLE,
+            SKY_RADIANCE,
             ATMOSPHERE_TRANSMITTANCE,
             ATMOSPHERE_MULTI_SCATTERING,
             SKY_VIEW,
@@ -1139,6 +1183,7 @@ impl RenderPass for AtmospherePass {
             (ATMOSPHERE_TRANSMITTANCE, &self.transmittance),
             (ATMOSPHERE_MULTI_SCATTERING, &self.multi_scattering),
             (SKY_VIEW, &self.sky_view),
+            (SKY_RADIANCE, &self.sky_radiance),
             (ATMOSPHERE_AERIAL, &self.aerial),
         ] {
             let view: &'a wgpu::TextureView = unsafe { std::mem::transmute(view) };

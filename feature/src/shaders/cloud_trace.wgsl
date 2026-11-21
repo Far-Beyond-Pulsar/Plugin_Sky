@@ -207,7 +207,7 @@ fn trace_cirrus(c: CloudLayerParams, d: vec3<f32>, t: f32, footprint: f32) -> ve
         direct += sunlight * energy
             * cloud_sun_scattering(dot(d, toward_light), od_sun);
     }
-    let sky = sky_table_eval(d * t, up, vec3<f32>(1.0));
+    let sky = sky_table_eval(d * t, up);
     let source = c.albedo * (direct + 0.5 * sky);
     let opacity = 1.0 - exp(-od);
     return vec4<f32>(source * opacity, 1.0 - opacity);
@@ -247,8 +247,8 @@ fn trace_clouds(d: vec3<f32>, limit: f32, uv: vec2<f32>, jitter: f32) -> CloudTr
     // (dimmed towards the base, under the cloud) and below (the ground's).
     let mid = d * (t0 + 0.5 * span);
     let up = normalize(eye + mid);
-    let sky_above = sky_table_eval(mid, up, vec3<f32>(1.0));
-    let sky_below = sky_table_eval(mid, -up, vec3<f32>(1.0));
+    let sky_above = sky_table_eval(mid, up);
+    let sky_below = sky_table_eval(mid, -up);
     var radiance = vec3<f32>(0.0);
     var transmittance = 1.0;
     var depth_sum = 0.0;
