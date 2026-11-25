@@ -650,7 +650,7 @@ fn buffer_entry(
 struct Kernel {
     /// The GPU scope the dispatch reports under while the profiler records.
     scope: &'static str,
-    pipeline: wgpu::ComputePipeline,
+    pipeline: helio_core::shader::DeferredCompute,
     group: Option<wgpu::BindGroup>,
     groups: [u32; 3],
     /// Reads only the atmosphere's parameters (not the camera, the sun or
@@ -685,7 +685,7 @@ pub struct AtmospherePass {
     shared_layout: wgpu::BindGroupLayout,
     shared_group: Option<wgpu::BindGroup>,
     shared_key: Option<(wgpu::Buffer, wgpu::Buffer, wgpu::Buffer)>,
-    resolve: wgpu::ComputePipeline,
+    resolve: helio_core::shader::DeferredCompute,
     kernels: Vec<Kernel>,
     frame: wgpu::Buffer,
     /// The sky's own layers (`SKY_LAYERS`), resolved with the frame.
@@ -783,7 +783,7 @@ impl AtmospherePass {
                 bind_group_layouts: &groups,
                 immediate_size: 0,
             });
-            helio_core::shader::create_compute_pipeline(
+            helio_core::shader::create_compute_pipeline_deferred(
                 &device,
                 wgpu::ComputePipelineDescriptor {
                     label: Some(entry),
@@ -1223,7 +1223,7 @@ impl RenderPass for AtmospherePass {
 /// sky and the sun where no geometry is, aerial perspective where it is.
 /// Draws nothing without an atmosphere.
 pub struct AtmosphereCompositePass {
-    pipeline: wgpu::RenderPipeline,
+    pipeline: helio_core::shader::DeferredRender,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     /// Its bind groups: one per set of inputs (the cloud trace's alternate
@@ -1312,7 +1312,7 @@ impl AtmosphereCompositePass {
             dst_factor: wgpu::BlendFactor::SrcAlpha,
             operation: wgpu::BlendOperation::Add,
         };
-        let pipeline = helio_core::shader::create_render_pipeline(
+        let pipeline = helio_core::shader::create_render_pipeline_deferred(
             &device,
             wgpu::RenderPipelineDescriptor {
                 label: Some("Atmosphere composite"),

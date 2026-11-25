@@ -175,13 +175,13 @@ fn compute_pipeline(
     module: &wgpu::ShaderModule,
     layout: &wgpu::BindGroupLayout,
     entry_point: &str,
-) -> wgpu::ComputePipeline {
+) -> helio_core::shader::DeferredCompute {
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(entry_point),
         bind_group_layouts: &[Some(layout)],
         immediate_size: 0,
     });
-    helio_core::shader::create_compute_pipeline(
+    helio_core::shader::create_compute_pipeline_deferred(
         &device,
         wgpu::ComputePipelineDescriptor {
             label: Some(entry_point),
@@ -240,7 +240,7 @@ struct WeatherBake {
 struct Dispatch {
     /// The GPU scope the dispatch reports under while the profiler records.
     scope: &'static str,
-    pipeline: wgpu::ComputePipeline,
+    pipeline: helio_core::shader::DeferredCompute,
     group: wgpu::BindGroup,
     groups: [u32; 3],
 }
@@ -297,7 +297,7 @@ impl CloudVolumes {
                           side: u32,
                           mips: u32,
                           kernel: &str,
-                          downsample: &wgpu::ComputePipeline| {
+                          downsample: &helio_core::shader::DeferredCompute| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d {
@@ -701,9 +701,9 @@ pub struct CloudTracePass {
     trace_layout: wgpu::BindGroupLayout,
     reconstruct_layout: wgpu::BindGroupLayout,
     visibility_layout: wgpu::BindGroupLayout,
-    trace: wgpu::ComputePipeline,
-    reconstruct: wgpu::ComputePipeline,
-    visibility: wgpu::ComputePipeline,
+    trace: helio_core::shader::DeferredCompute,
+    reconstruct: helio_core::shader::DeferredCompute,
+    visibility: helio_core::shader::DeferredCompute,
     visibility_group: Option<(Vec<wgpu::TextureView>, Vec<wgpu::Buffer>, wgpu::BindGroup)>,
     /// A 1x1 zero texture: no terrain visibility.
     no_terrain: wgpu::TextureView,
