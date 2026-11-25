@@ -96,7 +96,7 @@ struct SkyPlan {
     // Indirect dispatch arguments (x, y, z, unused), by `SKY_PLAN_*` slot
     // (atmosphere.rs): the tables built from the row's parameters alone and
     // the planet weather's bake.
-    args: array<vec4<u32>, 4>,
+    args: array<vec4<u32>, 5>,
 }
 
 // Whether the frame draws clouds.

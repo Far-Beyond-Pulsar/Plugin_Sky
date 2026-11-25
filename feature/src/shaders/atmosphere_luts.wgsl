@@ -18,9 +18,9 @@ struct Resolve {
     // x: words of an atmosphere row.
     row_words: vec4<u32>,
     // The groups of each kernel that runs only on a change (`SkyPlan::args`
-    // slots: transmittance, multiple scattering, sky table, the planet
-    // weather whole), then the weather's slice.
-    groups: array<vec4<u32>, 5>,
+    // slots: transmittance, multiple scattering, sky table, sky radiance,
+    // the planet weather whole), then the weather's slice.
+    groups: array<vec4<u32>, 6>,
 }
 
 @group(0) @binding(0) var<uniform> resolve_input: Resolve;
@@ -45,8 +45,10 @@ struct Resolve {
 @group(1) @binding(5) var sky_view_lut: texture_2d<f32>;
 @group(1) @binding(6) var aerial_out: texture_storage_3d<rgba16float, write>;
 @group(1) @binding(7) var<storage, read_write> sky_table_out: array<vec4<f32>>;
+@group(1) @binding(8) var sky_radiance_out: texture_storage_3d<rgba16float, write>;
+@group(1) @binding(9) var sky_radiance_lut: texture_3d<f32>;
 // `resolve`'s group 1: the frame's plan.
-@group(1) @binding(8) var<storage, read_write> plan: SkyPlan;
+@group(1) @binding(10) var<storage, read_write> plan: SkyPlan;
 
 const NO_ROW: u32 = 0xffffffffu;
 const RESOLVE_THREADS: u32 = 256u;
@@ -80,7 +82,7 @@ fn resolve(@builtin(local_invocation_index) lane: u32) {
     if first == NO_ROW {
         plan.row_hash = 0u;
         plan.rebuilt = 0u;
-        for (var k = 0u; k < 4u; k++) { plan.args[k] = vec4<u32>(0u); }
+        for (var k = 0u; k < 5u; k++) { plan.args[k] = vec4<u32>(0u); }
         return;
     }
     let params = atmospheres[first].medium;
@@ -96,10 +98,10 @@ fn resolve(@builtin(local_invocation_index) lane: u32) {
     let rebuilt = hash != plan.row_hash;
     plan.row_hash = hash;
     plan.rebuilt = select(0u, 1u, rebuilt);
-    for (var k = 0u; k < 3u; k++) {
+    for (var k = 0u; k < 4u; k++) {
         plan.args[k] = select(vec4<u32>(0u), resolve_input.groups[k], rebuilt);
     }
-    plan.args[3] = select(resolve_input.groups[4], resolve_input.groups[3], rebuilt);
+    plan.args[4] = select(resolve_input.groups[5], resolve_input.groups[4], rebuilt);
     // Keep authored atmosphere data intact while resolving a cloudless XR sky.
     if resolve_input.clock.y > 0.5 {
         own.clouds_enabled = 0u;
@@ -242,6 +244,26 @@ fn multi_scattering_kernel(@builtin(global_invocation_id) id: vec3<u32>) {
     textureStore(multi_scattering_out, vec2<i32>(id.xy), vec4<f32>(psi, 1.0));
 }
 
+// The sky's radiance along `d` from `o` (planet-relative, inside the air)
+// for a unit sun towards `sun`: the air's scattering and, where `d` meets
+// the planet's analytic ground (where no geometry draws it), the
+// Lambertian ground lit by the sun, through the air. The sky-view LUT and
+// the radiance table are both this, so a ray's sky is the drawn sky.
+fn sky_along(o: vec3<f32>, d: vec3<f32>, sun: vec3<f32>) -> vec3<f32> {
+    let p = frame.params;
+    let segment = sky_segment(p, o, d, true);
+    if segment.y <= segment.x { return vec3<f32>(0.0); }
+    let s = integrate(sun, o, d, segment.x, segment.y, 32.0);
+    var radiance = s.radiance;
+    if segment.z > 0.5 {
+        let n = normalize(o + d * segment.y);
+        let mu_s = dot(n, sun);
+        radiance += s.transmittance * sun_transmittance(p.bottom_radius, mu_s)
+            * max(mu_s, 0.0) * p.ground_albedo / SKY_PI;
+    }
+    return radiance;
+}
+
 @compute @workgroup_size(8, 8)
 fn sky_view_kernel(@builtin(global_invocation_id) id: vec3<u32>) {
     if !atmosphere_active() || any(vec2<f32>(id.xy) >= SKY_VIEW_SIZE) { return; }
@@ -252,27 +274,29 @@ fn sky_view_kernel(@builtin(global_invocation_id) id: vec3<u32>) {
     let angles = sky_view_angles(p, r, uv);
     let basis = sky_view_basis(eye / r, frame.sun.xyz);
     let d = basis * vec3<f32>(sin(angles.x) * cos(angles.y), cos(angles.x), sin(angles.x) * sin(angles.y));
-    let segment = sky_segment(frame.params, eye, d, true);
     var radiance = vec3<f32>(0.0);
-    if segment.y > segment.x {
-        for (var i = 0u; i < frame.directional_light_count.x; i++) {
-            let base = i * 3u;
-            let light_dir = frame.directional_lights[base].xyz;
-            let energy = frame.directional_lights[base + 1u].rgb;
-            let s = integrate(light_dir, eye, d, segment.x, segment.y, 32.0);
-            radiance += s.radiance * energy;
-            if segment.z > 0.5 {
-                // The ground seen through the atmosphere (where no geometry
-                // draws it): each directional source lights the Lambertian ground.
-                let x = eye + d * segment.y;
-                let n = normalize(x);
-                let mu_s = dot(n, light_dir);
-                radiance += s.transmittance * energy * sun_transmittance(p.bottom_radius, mu_s)
-                    * max(mu_s, 0.0) * p.ground_albedo / SKY_PI;
-            }
-        }
+    for (var i = 0u; i < frame.directional_light_count.x; i++) {
+        let base = i * 3u;
+        radiance += sky_along(eye, d, frame.directional_lights[base].xyz)
+            * frame.directional_lights[base + 1u].rgb;
     }
     textureStore(sky_view_out, vec2<i32>(id.xy), vec4<f32>(radiance, 1.0));
+}
+
+// The sky's radiance table (`SKY_RADIANCE_*` in frame_sky.wgsl): a lane a
+// texel of an entry's map, an entry a slice; the sky along the texel's
+// direction (`sky_along`) at the entry's radius for a unit sun at its
+// cosine. It depends on the medium alone.
+@compute @workgroup_size(8, 8, 1)
+fn sky_radiance_kernel(@builtin(global_invocation_id) id: vec3<u32>) {
+    if !atmosphere_active() || id.x >= SKY_RADIANCE_AZIMUTH || id.y >= SKY_RADIANCE_ZENITH { return; }
+    let p = frame.params;
+    let r = sky_table_row_radius(p, id.z / SKY_TABLE_MU);
+    let mu_s = sky_table_column_mu(id.z % SKY_TABLE_MU);
+    let sun = vec3<f32>(sqrt(max(1.0 - mu_s * mu_s, 0.0)), mu_s, 0.0);
+    let uv = (vec2<f32>(id.xy) + 0.5) / vec2<f32>(f32(SKY_RADIANCE_AZIMUTH), f32(SKY_RADIANCE_ZENITH));
+    let d = sky_radiance_direction(p, r, uv);
+    textureStore(sky_radiance_out, vec3<i32>(id), vec4<f32>(sky_along(vec3<f32>(0.0, r, 0.0), d, sun), 1.0));
 }
 
 // Aerial perspective: per froxel column, summed in-scattered radiance from
@@ -361,47 +385,31 @@ fn irradiance_kernel(@builtin(local_invocation_index) li: u32) {
     }
 }
 
-// The sky's irradiance table (`SkyFrame::sky_table`): one workgroup
-// per entry (altitude, sun cosine), its 64 lanes two directions each of a
-// Fibonacci sphere: the sky (single and multiple scattering) and the lit
-// ground below the horizon, through the air, for a unit sun; projected
-// on L2 harmonics, cosine-convolved, divided by pi. It depends on the
-// medium alone.
+// The sky's irradiance table (`SKY_TABLE_*` in frame_sky.wgsl): one
+// workgroup an entry, its 64 lanes four directions each of a Fibonacci
+// sphere read from the entry's radiance map (`sky_radiance_kernel`), so
+// the irradiance is the integral of the radiance a ray takes; projected on
+// L2 harmonics, cosine-convolved, divided by pi.
 var<workgroup> table_partial: array<array<vec3<f32>, 6>, 64>;
 
 @compute @workgroup_size(64)
 fn sky_table_kernel(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) li: u32) {
     let entry = wg.x;
     let p = frame.params;
-    let ir = entry / SKY_TABLE_MU;
-    let im = entry % SKY_TABLE_MU;
-    let height = pow(f32(ir) / f32(SKY_TABLE_R - 1u), 2.0);
-    let r = p.bottom_radius + max(height * (p.top_radius - p.bottom_radius), 0.01);
-    let mu_s = SKY_TABLE_MU_LO + (1.0 - SKY_TABLE_MU_LO) * f32(im) / f32(SKY_TABLE_MU - 1u);
-    let sun = vec3<f32>(sqrt(max(1.0 - mu_s * mu_s, 0.0)), mu_s, 0.0);
-    let o = vec3<f32>(0.0, r, 0.0);
-    let total = 128u;
+    let r = sky_table_row_radius(p, entry / SKY_TABLE_MU);
+    let per_lane = 4u;
+    let total = 64u * per_lane;
     var sh = array<vec3<f32>, 6>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
     if atmosphere_active() {
-        for (var k = 0u; k < 2u; k++) {
-            let n = li * 2u + k;
+        for (var k = 0u; k < per_lane; k++) {
+            let n = li * per_lane + k;
             let zc = 1.0 - (f32(n) + 0.5) * 2.0 / f32(total);
             let a = f32(n) * 2.39996323;
             let q = sqrt(max(1.0 - zc * zc, 0.0));
             // y is up: the sphere's axis.
             let d = vec3<f32>(q * cos(a), zc, q * sin(a));
-            let segment = sky_segment(p, o, d, true);
-            var l = vec3<f32>(0.0);
-            if segment.y > segment.x {
-                let sc = sky_integrate(p, sun, transmittance_lut, multi_scattering_lut, lut_sampler, o, d, segment.x, segment.y, 12.0, true);
-                l = sc.radiance;
-                if segment.z > 0.5 {
-                    let x = o + d * segment.y;
-                    let g = normalize(x);
-                    let mu = dot(g, sun);
-                    l += sc.transmittance * sun_transmittance(p.bottom_radius, mu) * max(mu, 0.0) * p.ground_albedo / SKY_PI;
-                }
-            }
+            let l = textureSampleLevel(sky_radiance_lut, lut_sampler,
+                sky_radiance_uvw(p, r, d, f32(entry)), 0.0).rgb;
             sh[0] += l * 0.282095;
             sh[1] += l * 0.488603 * d.y;
             sh[2] += l * 0.488603 * d.x;

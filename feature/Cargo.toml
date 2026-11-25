@@ -37,6 +37,8 @@ helio-pass-sky = { path = ".", features = ["host-rows"] }
 helio-components = { workspace = true }
 pollster = "=0.4.0"
 naga = { version = "30", features = ["wgsl-in"] }
+# The sky radiance test (`tests/sky_radiance_gpu.rs`): its camera.
+glam = { workspace = true }
 
 [lints]
 workspace = true

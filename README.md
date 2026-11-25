@@ -47,6 +47,20 @@ Every pass the plugin's feature adds to the default pipeline is a node of `.rend
 | `helio.pass.cloud_trace` | Sky: Cloud Trace | Lighting-inputs slot, order 10 |
 | `helio.pass.atmosphere_composite` | Sky: Composite | Lighting slot |
 
+## Lighting inputs it publishes
+
+The atmosphere pass (`feature/src/atmosphere.rs`, `atmosphere_luts.wgsl`)
+publishes the frame's sky contracts (Helio's `helio-frame-api`
+`lighting::sky`): the sky frame (`SKY_FRAME`), the camera's sky-view LUT
+(the full azimuth circle), the sky radiance table (`SKY_RADIANCE`: the sky's
+radiance by direction for a unit sun at 16 altitudes and 40 sun angles,
+the same integral as the sky-view LUT, read with `sky_radiance_eval` by
+every ray that misses: the reference path tracer, GI's probe rays) and the
+irradiance table (`SKY_TABLE`, six harmonics integrated from the radiance
+table). Both tables are rebuilt only when the atmosphere's rows change. The
+contract that a miss's sky equals the drawn sky over the whole sphere is
+`feature/tests/sky_radiance_gpu.rs`.
+
 ## Building and testing
 
 Like [Plugin_Physics](https://github.com/Far-Beyond-Pulsar/Plugin_Physics), this plugin's crates are members
