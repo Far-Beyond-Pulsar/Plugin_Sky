@@ -15,6 +15,12 @@ struct Resolve {
     // x: how far the frame clock advanced (s), which the wind carries the
     // clouds over.
     clock: vec4<f32>,
+    // x: words of an atmosphere row.
+    row_words: vec4<u32>,
+    // The groups of each kernel that runs only on a change (`SkyPlan::args`
+    // slots: transmittance, multiple scattering, sky table, the planet
+    // weather whole), then the weather's slice.
+    groups: array<vec4<u32>, 5>,
 }
 
 @group(0) @binding(0) var<uniform> resolve_input: Resolve;
@@ -28,6 +34,8 @@ struct Resolve {
 @group(0) @binding(5) var lut_sampler: sampler;
 // The sky's own layers, resolved beside the frame's sky.
 @group(0) @binding(6) var<storage, read_write> layers: SkyLayersFrame;
+// The same rows as words, to tell whether the one in use changed.
+@group(0) @binding(7) var<storage, read> atmosphere_words: array<u32>;
 
 @group(1) @binding(0) var transmittance_out: texture_storage_2d<rgba16float, write>;
 @group(1) @binding(1) var transmittance_lut: texture_2d<f32>;
@@ -37,26 +45,61 @@ struct Resolve {
 @group(1) @binding(5) var sky_view_lut: texture_2d<f32>;
 @group(1) @binding(6) var aerial_out: texture_storage_3d<rgba16float, write>;
 @group(1) @binding(7) var<storage, read_write> sky_table_out: array<vec4<f32>>;
+// `resolve`'s group 1: the frame's plan.
+@group(1) @binding(8) var<storage, read_write> plan: SkyPlan;
 
-// Picks the first enabled atmosphere, packs the active directional lights,
-// and places the planet relative to the camera.
-@compute @workgroup_size(1)
-fn resolve() {
-    frame.planet = vec4<f32>(0.0);
-    var found = false;
-    var params: SkyMedium;
-    var own: SkyLayers;
-    for (var i = 0u; i < arrayLength(&atmospheres); i++) {
-        let a = atmospheres[i];
-        if a.medium.enabled != 0u && a.medium.top_radius > a.medium.bottom_radius
-            && a.medium.bottom_radius > 0.0 {
-            params = a.medium;
-            own = a.layers;
-            found = true;
-            break;
+const NO_ROW: u32 = 0xffffffffu;
+const RESOLVE_THREADS: u32 = 256u;
+var<workgroup> first_enabled: atomic<u32>;
+
+fn row_is_enabled(i: u32) -> bool {
+    return atmospheres[i].medium.enabled != 0u
+        && atmospheres[i].medium.top_radius > atmospheres[i].medium.bottom_radius
+        && atmospheres[i].medium.bottom_radius > 0.0;
+}
+
+// Picks the first enabled atmosphere (the workgroup scans the rows together:
+// the table holds a row for every slot the component has used, and one thread
+// walking them each a memory latency long took half a millisecond), packs the
+// active directional lights, places the planet relative to the camera, and
+// plans the frame: whether the authored row changed (`SkyPlan`).
+@compute @workgroup_size(256)
+fn resolve(@builtin(local_invocation_index) lane: u32) {
+    if lane == 0u { atomicStore(&first_enabled, NO_ROW); }
+    workgroupBarrier();
+    let count = arrayLength(&atmospheres);
+    for (var i = lane; i < count; i += RESOLVE_THREADS) {
+        if row_is_enabled(i) {
+            atomicMin(&first_enabled, i);
         }
     }
-    if !found { return; }
+    workgroupBarrier();
+    if lane != 0u { return; }
+    let first = atomicLoad(&first_enabled);
+    frame.planet = vec4<f32>(0.0);
+    if first == NO_ROW {
+        plan.row_hash = 0u;
+        plan.rebuilt = 0u;
+        for (var k = 0u; k < 4u; k++) { plan.args[k] = vec4<u32>(0u); }
+        return;
+    }
+    let params = atmospheres[first].medium;
+    var own = atmospheres[first].layers;
+    // A row whose words differ from the last frame's rebuilds what is built
+    // from its parameters alone (the LUTs, the planet's weather).
+    var hash = 2166136261u;
+    let base = first * resolve_input.row_words.x;
+    for (var w = 0u; w < resolve_input.row_words.x; w++) {
+        hash = (hash ^ atmosphere_words[base + w]) * 16777619u;
+    }
+    hash |= 1u;
+    let rebuilt = hash != plan.row_hash;
+    plan.row_hash = hash;
+    plan.rebuilt = select(0u, 1u, rebuilt);
+    for (var k = 0u; k < 3u; k++) {
+        plan.args[k] = select(vec4<u32>(0u), resolve_input.groups[k], rebuilt);
+    }
+    plan.args[3] = select(resolve_input.groups[4], resolve_input.groups[3], rebuilt);
     // Keep authored atmosphere data intact while resolving a cloudless XR sky.
     if resolve_input.clock.y > 0.5 {
         own.clouds_enabled = 0u;

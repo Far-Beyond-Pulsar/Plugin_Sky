@@ -43,7 +43,9 @@ use bytemuck::{Pod, Zeroable};
 use helio_core::graph::ResourceBuilder;
 use helio_core::{PassContext, PrepareContext, RenderPass, ResourceKey, Result as HelioResult};
 
+use crate::steps::Steps;
 use crate::atmosphere::{
+    plan_args_offset, SKY_PLAN_WEATHER,
     ATMOSPHERE_AERIAL, ATMOSPHERE_MULTI_SCATTERING, ATMOSPHERE_TRANSMITTANCE, SKY_FRAME,
     SKY_LAYERS, SKY_LAYERS_SNIPPET, SKY_SNIPPET, SKY_TABLE, SKY_TABLE_SNIPPET,
 };
@@ -236,6 +238,8 @@ struct WeatherBake {
 
 /// A dispatch of one kernel.
 struct Dispatch {
+    /// The GPU scope the dispatch reports under while the profiler records.
+    scope: &'static str,
     pipeline: wgpu::ComputePipeline,
     group: wgpu::BindGroup,
     groups: [u32; 3],
@@ -252,10 +256,9 @@ pub(crate) struct CloudVolumes {
     planet_weather: wgpu::TextureView,
     bake: Dispatch,
     bake_params: wgpu::Buffer,
-    /// The rows (`epoch`, `content_generation`) the planet's weather was
-    /// built from whole, and whether this frame rebuilds it whole.
-    weather_rows: Option<(u64, u64)>,
-    bake_whole: bool,
+    /// The atmosphere pass's plan (`SkyPlan`): the bake's indirect arguments
+    /// and whether this frame rebuilds the map whole.
+    plan: wgpu::Buffer,
     frames: u32,
     shadow_map: wgpu::TextureView,
     shadow_frame: wgpu::Buffer,
@@ -265,7 +268,12 @@ pub(crate) struct CloudVolumes {
 impl CloudVolumes {
     /// The clouds' volumes and their weather and shadow kernels over the
     /// frame's sky (`frame`) and the sky's own layers (`layers`).
-    pub(crate) fn new(device: &wgpu::Device, frame: &wgpu::Buffer, layers: &wgpu::Buffer) -> Self {
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        frame: &wgpu::Buffer,
+        layers: &wgpu::Buffer,
+        plan: &wgpu::Buffer,
+    ) -> Self {
         let noise = helio_core::shader::module_with(
             device,
             "Cloud noise",
@@ -313,6 +321,7 @@ impl CloudVolumes {
             };
             let top = level(0);
             build.push(Dispatch {
+                scope: "Clouds: noise volumes",
                 pipeline: compute_pipeline(device, &noise, &generate_layout, kernel),
                 group: bind_group(
                     device,
@@ -325,6 +334,7 @@ impl CloudVolumes {
             for mip in 1..mips {
                 let (out, input) = (level(mip), level(mip - 1));
                 build.push(Dispatch {
+                    scope: "Clouds: noise volumes",
                     pipeline: downsample.clone(),
                     group: bind_group(
                         device,
@@ -401,6 +411,7 @@ impl CloudVolumes {
                     wgpu::TextureViewDimension::D2Array,
                 ),
                 buffer(3, wgpu::BufferBindingType::Storage { read_only: true }),
+                buffer(4, wgpu::BufferBindingType::Storage { read_only: true }),
             ],
         });
         let bake_params = device.create_buffer(&wgpu::BufferDescriptor {
@@ -410,6 +421,7 @@ impl CloudVolumes {
             mapped_at_creation: false,
         });
         let bake = Dispatch {
+            scope: "Clouds: planet weather",
             pipeline: compute_pipeline(device, &bake_module, &bake_layout, "planet_weather"),
             group: bind_group(
                 device,
@@ -420,6 +432,7 @@ impl CloudVolumes {
                     (1, bake_params.as_entire_binding()),
                     (2, wgpu::BindingResource::TextureView(&planet_faces)),
                     (3, layers.as_entire_binding()),
+                    (4, plan.as_entire_binding()),
                 ],
             ),
             groups: [
@@ -498,6 +511,7 @@ impl CloudVolumes {
         );
         let shadow = [
             Dispatch {
+                scope: "Clouds: shadow resolve",
                 pipeline: compute_pipeline(
                     device,
                     &shadow_module,
@@ -508,6 +522,7 @@ impl CloudVolumes {
                 groups: [1, 1, 1],
             },
             Dispatch {
+                scope: "Clouds: shadow map",
                 pipeline: compute_pipeline(
                     device,
                     &shadow_module,
@@ -531,8 +546,7 @@ impl CloudVolumes {
             planet_weather,
             bake,
             bake_params,
-            weather_rows: None,
-            bake_whole: true,
+            plan: plan.clone(),
             frames: 0,
             shadow_map,
             shadow_frame,
@@ -540,34 +554,27 @@ impl CloudVolumes {
         }
     }
 
-    /// Plans this frame's planet weather: whole when the atmosphere's rows
-    /// (`rows`: their epoch and content generation) changed since it was
-    /// last built whole, otherwise a sixteenth of its rows (written only
-    /// while the weather evolves).
-    pub(crate) fn prepare(&mut self, ctx: &PrepareContext, rows: Option<(u64, u64)>) {
-        self.bake_whole = rows.is_none() || self.weather_rows != rows;
-        self.weather_rows = rows;
+    /// This frame's slice of the planet weather: a sixteenth of its rows
+    /// (written only while the weather evolves). The GPU decides whether the
+    /// frame builds it whole instead, when the atmosphere's row changed
+    /// (`SkyPlan::rebuilt`, read by the bake).
+    pub(crate) fn prepare(&mut self, ctx: &PrepareContext) {
         self.frames = self.frames.wrapping_add(1);
-        let params = if self.bake_whole {
-            WeatherBake {
-                phase: 0,
-                stride: 1,
-                _pad: [0; 2],
-            }
-        } else {
-            WeatherBake {
-                phase: self.frames % PLANET_WEATHER_STRIDE,
-                stride: PLANET_WEATHER_STRIDE,
-                _pad: [0; 2],
-            }
+        let params = WeatherBake {
+            phase: self.frames % PLANET_WEATHER_STRIDE,
+            stride: PLANET_WEATHER_STRIDE,
+            _pad: [0; 2],
         };
         ctx.write_buffer(&self.bake_params, 0, bytemuck::bytes_of(&params));
     }
 
-    /// Forgets the planet weather's rows: the next active frame builds it
-    /// whole.
-    pub(crate) fn forget_weather(&mut self) {
-        self.weather_rows = None;
+    /// The bake's groups when it builds the map whole and when it builds the
+    /// frame's slice: what the atmosphere's plan holds as its indirect
+    /// arguments.
+    pub(crate) fn weather_groups(&self) -> ([u32; 3], [u32; 3]) {
+        let rows = PLANET_WEATHER_SIDE.div_ceil(PLANET_WEATHER_STRIDE);
+        let whole = self.bake.groups;
+        (whole, [whole[0], rows.div_ceil(8), whole[2]])
     }
 
     /// The map's frame, zeroed while no atmosphere is active.
@@ -577,31 +584,29 @@ impl CloudVolumes {
 
     /// Builds the noise (the first time) and this frame's shadow map, after
     /// the atmosphere's frame is resolved.
-    pub(crate) fn record(&mut self, pass: &mut helio_core::cmd::ComputeCmds<'_>) {
-        if !self.built {
-            for dispatch in &self.build {
+    pub(crate) fn record(&mut self, steps: &mut Steps<'_, '_>) {
+        let run = |steps: &mut Steps<'_, '_>, dispatch: &Dispatch| {
+            steps.step(dispatch.scope, |pass| {
                 pass.set_pipeline(&dispatch.pipeline);
                 pass.set_bind_group(0, Some(&dispatch.group), &[]);
-                pass.dispatch_workgroups(
-                    dispatch.groups[0],
-                    dispatch.groups[1],
-                    dispatch.groups[2],
-                );
+                pass.dispatch_workgroups(dispatch.groups[0], dispatch.groups[1], dispatch.groups[2]);
+            });
+        };
+        if !self.built {
+            for dispatch in &self.build {
+                run(steps, dispatch);
             }
             self.built = true;
         }
-        let rows = if self.bake_whole {
-            PLANET_WEATHER_SIDE
-        } else {
-            PLANET_WEATHER_SIDE.div_ceil(PLANET_WEATHER_STRIDE)
-        };
-        pass.set_pipeline(&self.bake.pipeline);
-        pass.set_bind_group(0, Some(&self.bake.group), &[]);
-        pass.dispatch_workgroups(self.bake.groups[0], rows.div_ceil(8), self.bake.groups[2]);
+        let bake = &self.bake;
+        let plan = &self.plan;
+        steps.step(bake.scope, |pass| {
+            pass.set_pipeline(&bake.pipeline);
+            pass.set_bind_group(0, Some(&bake.group), &[]);
+            pass.dispatch_workgroups_indirect(plan, plan_args_offset(SKY_PLAN_WEATHER));
+        });
         for dispatch in &self.shadow {
-            pass.set_pipeline(&dispatch.pipeline);
-            pass.set_bind_group(0, Some(&dispatch.group), &[]);
-            pass.dispatch_workgroups(dispatch.groups[0], dispatch.groups[1], dispatch.groups[2]);
+            run(steps, dispatch);
         }
     }
 

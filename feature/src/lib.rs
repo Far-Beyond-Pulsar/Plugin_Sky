@@ -15,6 +15,7 @@
 pub mod atmosphere;
 pub mod clouds;
 mod feature;
+mod steps;
 #[cfg(feature = "host-rows")]
 pub mod host_rows;
 pub mod scene_rows;

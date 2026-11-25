@@ -45,6 +45,7 @@ use helio_core::graph::ResourceBuilder;
 use helio_core::{PassContext, PrepareContext, RenderPass, ResourceKey, Result as HelioResult};
 use pulsar_scenedb::gpu::BufferKey;
 
+use crate::steps::Steps;
 use crate::clouds::{
     CloudVolumes, ATMOSPHERE_CLOUDS, ATMOSPHERE_CLOUD_DEPTH, ATMOSPHERE_CLOUD_DETAIL,
     ATMOSPHERE_CLOUD_PLANET_WEATHER, ATMOSPHERE_CLOUD_SHAPE, ATMOSPHERE_CLOUD_WEATHER,
@@ -565,6 +566,11 @@ struct ResolveUniform {
     origin_lo: [f32; 4],
     /// x: the frame clock's advance (s).
     clock: [f32; 4],
+    /// x: words of an atmosphere row.
+    row_words: [u32; 4],
+    /// The groups of the dispatches gated by the plan, by slot, then the
+    /// planet weather's slice.
+    groups: [[u32; 4]; 5],
 }
 
 fn lut(
@@ -642,12 +648,35 @@ fn buffer_entry(
 }
 
 struct Kernel {
+    /// The GPU scope the dispatch reports under while the profiler records.
+    scope: &'static str,
     pipeline: wgpu::ComputePipeline,
     group: Option<wgpu::BindGroup>,
     groups: [u32; 3],
     /// Reads only the atmosphere's parameters (not the camera, the sun or
-    /// the frame's origin), so its output holds until the rows change.
-    params_only: bool,
+    /// the frame's origin), so its output holds until the row changes: the
+    /// slot of its arguments in the frame's plan (`SKY_PLAN_*`), which
+    /// `resolve` fills with zero groups while the row is the one the table
+    /// was built from.
+    gate: Option<u32>,
+}
+
+/// `SkyPlan` (`sky_layers.wgsl`) in bytes: the row's hash and whether it
+/// changed, then the indirect arguments of the gated dispatches.
+const SKY_PLAN_BYTES: u64 = 16 + 4 * 16;
+/// Where the plan's indirect arguments start.
+const SKY_PLAN_ARGS: u64 = 16;
+/// Plan slots of the dispatches that run only when the atmosphere's row
+/// changed (the slot is the index into `SkyPlan::args`).
+const SKY_PLAN_TRANSMITTANCE: u32 = 0;
+const SKY_PLAN_MULTI_SCATTERING: u32 = 1;
+const SKY_PLAN_SKY_TABLE: u32 = 2;
+/// The planet weather's bake: whole on a change, else its slice.
+pub(crate) const SKY_PLAN_WEATHER: u32 = 3;
+
+/// Byte offset of a plan slot's indirect arguments.
+pub(crate) const fn plan_args_offset(slot: u32) -> u64 {
+    SKY_PLAN_ARGS + 16 * slot as u64
 }
 
 /// Resolves the scene's atmosphere and builds its lookup tables (see the
@@ -675,11 +704,8 @@ pub struct AtmospherePass {
     /// `(epoch, content_generation)` of the atmosphere rows the
     /// parameter-only tables (transmittance, multiple scattering, the sky
     /// irradiance table) were last built from; `None` rebuilds them.
-    params_tables: Option<(u64, u64)>,
-    /// `HELIO_ATMOSPHERE_TRACE=1`: the resolved frame's head (planet, sun,
-    /// illuminance, eye) read back and printed each frame (diagnostics).
-    trace: Option<Vec<(u64, wgpu::Buffer)>>,
-    frame_index: u64,
+    plan: wgpu::Buffer,
+    plan_group: wgpu::BindGroup,
     clouds: CloudVolumes,
 }
 
@@ -712,6 +738,7 @@ impl AtmospherePass {
                     count: None,
                 },
                 buffer_entry(6, compute, storage(false)),
+                buffer_entry(7, compute, storage(true)),
             ],
         });
         let d2 = wgpu::TextureViewDimension::D2;
@@ -770,7 +797,8 @@ impl AtmospherePass {
         };
         // Each kernel binds only its own outputs and inputs: a texture may
         // not be written and sampled in one dispatch.
-        let kernel = |entry: &str,
+        let kernel = |scope: &'static str,
+                      entry: &str,
                       entries: &[(wgpu::BindGroupLayoutEntry, wgpu::BindingResource)],
                       groups: [u32; 3]| {
             let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -789,19 +817,21 @@ impl AtmospherePass {
                     .collect::<Vec<_>>(),
             });
             Kernel {
+                scope,
                 pipeline: pipeline(Some(&layout), entry),
                 group: Some(group),
                 groups,
-                params_only: false,
+                gate: None,
             }
         };
         let view = wgpu::BindingResource::TextureView;
-        let params_only = |kernel: Kernel| Kernel {
-            params_only: true,
+        let gated = |slot: u32, kernel: Kernel| Kernel {
+            gate: Some(slot),
             ..kernel
         };
         let kernels = vec![
-            params_only(kernel(
+            gated(SKY_PLAN_TRANSMITTANCE, kernel(
+                "Atmosphere: transmittance LUT",
                 "transmittance_lut_kernel",
                 &[(storage_texture(0, d2), view(&transmittance))],
                 [
@@ -810,7 +840,8 @@ impl AtmospherePass {
                     1,
                 ],
             )),
-            params_only(kernel(
+            gated(SKY_PLAN_MULTI_SCATTERING, kernel(
+                "Atmosphere: multi-scattering LUT",
                 "multi_scattering_kernel",
                 &[
                     (sampled_texture(1, compute, d2), view(&transmittance)),
@@ -823,6 +854,7 @@ impl AtmospherePass {
                 ],
             )),
             kernel(
+                "Atmosphere: sky view",
                 "sky_view_kernel",
                 &[
                     (sampled_texture(1, compute, d2), view(&transmittance)),
@@ -836,6 +868,7 @@ impl AtmospherePass {
                 ],
             ),
             kernel(
+                "Atmosphere: aerial perspective",
                 "aerial_kernel",
                 &[
                     (sampled_texture(1, compute, d2), view(&transmittance)),
@@ -848,11 +881,13 @@ impl AtmospherePass {
                 [AERIAL.div_ceil(8), AERIAL.div_ceil(8), 1],
             ),
             kernel(
+                "Atmosphere: irradiance",
                 "irradiance_kernel",
                 &[(sampled_texture(5, compute, d2), view(&sky_view))],
                 [1, 1, 1],
             ),
-            params_only(kernel(
+            gated(SKY_PLAN_SKY_TABLE, kernel(
+                "Atmosphere: sky table",
                 "sky_table_kernel",
                 &[
                     (sampled_texture(1, compute, d2), view(&transmittance)),
@@ -865,7 +900,25 @@ impl AtmospherePass {
                 [SKY_TABLE_ENTRIES as u32, 1, 1],
             )),
         ];
-        let resolve = pipeline(None, "resolve");
+        let plan = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Atmosphere plan"),
+            size: SKY_PLAN_BYTES,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
+            mapped_at_creation: false,
+        });
+        let plan_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Atmosphere plan"),
+            entries: &[buffer_entry(8, compute, storage(false))],
+        });
+        let plan_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Atmosphere plan"),
+            layout: &plan_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 8,
+                resource: plan.as_entire_binding(),
+            }],
+        });
+        let resolve = pipeline(Some(&plan_layout), "resolve");
         let frame = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Atmosphere frame"),
             size: SKY_FRAME_BYTES,
@@ -881,7 +934,7 @@ impl AtmospherePass {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let clouds = CloudVolumes::new(device, &frame, &layers);
+        let clouds = CloudVolumes::new(device, &frame, &layers, &plan);
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Atmosphere resolve"),
             size: std::mem::size_of::<ResolveUniform>() as u64,
@@ -927,11 +980,26 @@ impl AtmospherePass {
             }),
             active: false,
             xr_mode: false,
-            params_tables: None,
-            trace: std::env::var_os("HELIO_ATMOSPHERE_TRACE").map(|_| Vec::new()),
-            frame_index: 0,
+            plan,
+            plan_group,
             clouds,
         }
+    }
+
+    /// The groups of the gated dispatches, by plan slot, then the planet
+    /// weather's slice: what `resolve` writes as indirect arguments when the
+    /// atmosphere's row changed.
+    fn plan_groups(&self) -> [[u32; 4]; 5] {
+        let mut groups = [[0u32; 4]; 5];
+        for kernel in &self.kernels {
+            if let Some(slot) = kernel.gate {
+                groups[slot as usize] = [kernel.groups[0], kernel.groups[1], kernel.groups[2], 0];
+            }
+        }
+        let (whole, slice) = self.clouds.weather_groups();
+        groups[SKY_PLAN_WEATHER as usize] = [whole[0], whole[1], whole[2], 0];
+        groups[4] = [slice[0], slice[1], slice[2], 0];
+        groups
     }
 
     /// The pass that composites this atmosphere over the lit scene, in
@@ -997,13 +1065,7 @@ impl RenderPass for AtmospherePass {
             ctx.write_buffer(self.clouds.shadow_frame(), 0, &[0u8; 16]);
         }
         if active {
-            self.clouds.prepare(
-                ctx,
-                rows.map(|handle| (handle.epoch, handle.content_generation)),
-            );
-        } else {
-            self.params_tables = None;
-            self.clouds.forget_weather();
+            self.clouds.prepare(ctx);
         }
         self.active = active;
         let origin = ctx.world_origin;
@@ -1013,6 +1075,8 @@ impl RenderPass for AtmospherePass {
             origin_hi: hi.extend(0.0).to_array(),
             origin_lo: lo.extend(0.0).to_array(),
             clock: [ctx.time_delta, f32::from(self.xr_mode), 0.0, 0.0],
+            row_words: [(std::mem::size_of::<AtmosphereRow>() / 4) as u32, 0, 0, 0],
+            groups: self.plan_groups(),
         };
         ctx.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
         Ok(())
@@ -1064,65 +1128,70 @@ impl RenderPass for AtmospherePass {
                         binding: 6,
                         resource: self.layers.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: atmospheres.as_entire_binding(),
+                    },
                 ],
             }));
             self.shared_key = Some(key);
         }
+        let scopes_on = ctx.gpu_scopes_enabled();
         let mut cmds = ctx.graphics_cmds();
-        let mut pass = cmds.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("Atmosphere"),
-            timestamp_writes: None,
-        });
-        pass.set_bind_group(0, self.shared_group.as_ref(), &[]);
-        pass.set_pipeline(&self.resolve);
-        pass.dispatch_workgroups(1, 1, 1);
         // The atmosphere's parameters come only from its rows (`resolve`
-        // picks the first enabled one), so the tables built from them alone
-        // are rebuilt only when those rows change.
-        let rows = ctx
-            .scene_buffers
-            .get(BufferKey::of("atmospheres"))
-            .map(|handle| (handle.epoch, handle.content_generation));
-        let rebuild_params_tables = rows.is_none() || self.params_tables != rows;
-        self.params_tables = rows;
-        for kernel in &self.kernels {
-            if kernel.params_only && !rebuild_params_tables {
-                continue;
-            }
-            pass.set_pipeline(&kernel.pipeline);
-            pass.set_bind_group(1, kernel.group.as_ref(), &[]);
-            pass.dispatch_workgroups(kernel.groups[0], kernel.groups[1], kernel.groups[2]);
-        }
-        // In XR the sky-view LUT provides the baked cloudless sky. Avoid
-        // generating cloud weather, shadows and volumes for each eye.
-        if !self.xr_mode {
-            self.clouds.record(&mut pass);
-        }
-        drop(pass);
-        self.frame_index += 1;
-        if let Some(trace) = &mut self.trace {
-            // Map last frame's copy (submitted by now), copy this frame's.
-            for (index, buffer) in trace.drain(..) {
-                let probe = buffer.clone();
-                buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
-                    if result.is_err() { return; }
-                    let bytes = probe.slice(..).get_mapped_range().unwrap().to_vec();
-                    let f: &[f32] = bytemuck::cast_slice(&bytes);
-                    eprintln!(
-                        "ATMOSPHERE_TRACE frame {index} planet {:?} sun {:?} illuminance {:?} eye {:?} r {:.3}",
-                        &f[0..4], &f[4..8], &f[8..12], &f[12..16],
-                        (f[12] * f[12] + f[13] * f[13] + f[14] * f[14]).sqrt(),
-                    );
+        // picks the first enabled one and, on the GPU, whether its words
+        // changed since the last frame), so the tables built from them alone
+        // are dispatched with zero groups unless they did.
+        let shared = self.shared_group.as_ref();
+        let (resolve, kernels, clouds, xr_mode) =
+            (&self.resolve, &self.kernels, &mut self.clouds, self.xr_mode);
+        let (plan, plan_group) = (&self.plan, &self.plan_group);
+        let mut record = |steps: &mut Steps<'_, '_>| {
+            steps.step("Atmosphere: resolve", |pass| {
+                pass.set_bind_group(0, shared, &[]);
+                pass.set_pipeline(resolve);
+                pass.set_bind_group(1, Some(plan_group), &[]);
+                pass.dispatch_workgroups(1, 1, 1);
+            });
+            for kernel in kernels {
+                steps.step(kernel.scope, |pass| {
+                    pass.set_bind_group(0, shared, &[]);
+                    pass.set_pipeline(&kernel.pipeline);
+                    pass.set_bind_group(1, kernel.group.as_ref(), &[]);
+                    match kernel.gate {
+                        Some(slot) => {
+                            pass.dispatch_workgroups_indirect(plan, plan_args_offset(slot))
+                        }
+                        None => pass.dispatch_workgroups(
+                            kernel.groups[0],
+                            kernel.groups[1],
+                            kernel.groups[2],
+                        ),
+                    }
                 });
             }
-            let staging = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Atmosphere trace"),
-                size: 64,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
+            // In XR the sky-view LUT provides the baked cloudless sky. Avoid
+            // generating cloud weather, shadows and volumes for each eye.
+            if !xr_mode {
+                clouds.record(steps);
+            }
+        };
+        if scopes_on {
+            let mut scope =
+                |cmds: &mut helio_core::CommandRecorder<'_>, name: &'static str, begin: bool| {
+                    if begin {
+                        ctx.begin_gpu_scope(cmds, name);
+                    } else {
+                        ctx.end_gpu_scope(cmds, name);
+                    }
+                };
+            record(&mut Steps::scoped(&mut cmds, &mut scope));
+        } else {
+            let mut pass = cmds.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Atmosphere"),
+                timestamp_writes: None,
             });
-            cmds.copy_buffer_to_buffer(&self.frame, 0, &staging, 0, 64);
-            trace.push((self.frame_index, staging));
+            record(&mut Steps::fused(&mut pass));
         }
         Ok(())
     }

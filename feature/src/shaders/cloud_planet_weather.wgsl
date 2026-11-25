@@ -34,8 +34,9 @@
 // have none: their weather fades to the layer's mean.
 
 struct WeatherBake {
-    // The rows of each face this dispatch writes: those whose index is
-    // `phase` modulo `stride` (1: all of them).
+    // The slice of each face's rows a frame writes while the map is not
+    // rebuilt whole (`plan.rebuilt`): those whose index is `phase` modulo
+    // `stride`.
     phase: u32,
     stride: u32,
     _pad: vec2<u32>,
@@ -45,6 +46,8 @@ struct WeatherBake {
 @group(0) @binding(1) var<uniform> bake: WeatherBake;
 @group(0) @binding(2) var weather_out: texture_storage_2d_array<rgba16float, write>;
 @group(0) @binding(3) var<storage, read> layers: SkyLayersFrame;
+// What `resolve` planned (`SkyPlan`): whether the whole map is rebuilt.
+@group(0) @binding(4) var<storage, read> plan: SkyPlan;
 
 const PI: f32 = 3.14159265;
 // Systems per cell of the lattice they are scattered on, its side in
@@ -278,14 +281,18 @@ fn weather_at(w: Weather, n: vec3<f32>, tropics: f32) -> vec4<f32> {
 @compute @workgroup_size(8, 8, 1)
 fn planet_weather(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = textureDimensions(weather_out).x;
-    let row = id.y * bake.stride + bake.phase;
+    // The whole map when the authored atmosphere changed, else this frame's
+    // slice of it.
+    let whole = plan.rebuilt != 0u;
+    let stride = select(bake.stride, 1u, whole);
+    let row = id.y * stride + select(bake.phase, 0u, whole);
     if id.x >= size || row >= size || id.z >= 6u { return; }
     if !sky_has_clouds(frame, layers) { return; }
     let p = frame.params;
     let l = layers.params;
     // While the weather holds still, rows are written only when the map is
     // rebuilt whole.
-    if bake.stride > 1u && l.cloud_evolution <= 0.0 { return; }
+    if stride > 1u && l.cloud_evolution <= 0.0 { return; }
     var w: Weather;
     w.radius = p.bottom_radius;
     let pole = l.cloud_pole;

@@ -81,6 +81,24 @@ struct SkyLayersFrame {
     cloud_detail_offset: vec4<f32>,
 }
 
+// What `resolve` decided for the frame, on the GPU, where the row is read: the
+// kernels that only need to run when the authored atmosphere changed are
+// dispatched indirectly with arguments of zero groups otherwise, and the
+// planet weather's bake reads `rebuilt` to take its whole map or a slice.
+// Nothing reads it back on the CPU.
+struct SkyPlan {
+    // Hash of the atmosphere row `resolve` last found (never 0; 0: none yet,
+    // so the next row found counts as changed).
+    row_hash: u32,
+    // 1 on the frame the row's hash differs from `row_hash`'s.
+    rebuilt: u32,
+    _pad: vec2<u32>,
+    // Indirect dispatch arguments (x, y, z, unused), by `SKY_PLAN_*` slot
+    // (atmosphere.rs): the tables built from the row's parameters alone and
+    // the planet weather's bake.
+    args: array<vec4<u32>, 4>,
+}
+
 // Whether the frame draws clouds.
 fn sky_has_clouds(frame: SkyFrame, layers: SkyLayersFrame) -> bool {
     return frame.planet.w > 0.5 && layers.params.clouds_enabled != 0u
