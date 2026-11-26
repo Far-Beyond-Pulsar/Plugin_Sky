@@ -167,6 +167,18 @@ pub struct AtmosphereComponent {
     /// Draw stars and textured directional emitters while the sun is below the horizon.
     #[property(category = "Night Sky")]
     pub night_sky_enabled: bool,
+    /// The night sky's own light on the clouds: the glow of the air and the
+    /// stars that fills clouds the moon does not reach, cool in colour (a
+    /// linear radiance; the moon authored as a light is 0.025). Fades out as
+    /// the lights brighten, so daylight is untouched.
+    #[property(min = 0.0, max = 1.0, step = 0.0005, category = "Night Sky")]
+    pub night_cloud_light: f32,
+    /// How many stops brighter a celestial body (a light with an emitter
+    /// disk: the moon) lights the clouds at night than the light is
+    /// authored, for the eye adapted to the dark. 0 leaves it as authored;
+    /// daylight is untouched.
+    #[property(min = 0.0, max = 8.0, step = 0.1, category = "Night Sky")]
+    pub cloud_moon_boost: f32,
     /// Approximate number of stars over the full sky.
     #[property(min = 0.0, max = 20000.0, step = 100.0, category = "Night Sky")]
     pub star_count: f32,
@@ -281,6 +293,8 @@ impl AtmosphereComponent {
             cloud_evolution: row.cloud_evolution,
             cloud_seed: row.cloud_seed,
             night_sky_enabled: row.night_sky_enabled != 0,
+            night_cloud_light: row.night_cloud_light,
+            cloud_moon_boost: row.cloud_moon_boost,
             star_count: row.star_count,
             star_brightness: row.star_brightness,
             star_twinkle_fraction: row.star_twinkle_fraction,
@@ -419,6 +433,8 @@ impl AtmosphereComponent {
             sun_angular_radius: self.sun_angular_radius_deg.to_radians(),
             enabled: u32::from(self.enabled),
             night_sky_enabled: u32::from(self.night_sky_enabled),
+            night_cloud_light: self.night_cloud_light.max(0.0),
+            cloud_moon_boost: self.cloud_moon_boost.max(0.0),
             star_count: self.star_count.clamp(0.0, 20000.0),
             star_brightness: self.star_brightness.max(0.0),
             star_twinkle_fraction: self.star_twinkle_fraction.clamp(0.0, 1.0),

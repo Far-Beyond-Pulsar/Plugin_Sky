@@ -176,7 +176,8 @@ fn cloud_directional_radiance(
         let transmittance = sky_sun_transmittance_lut(
             sky_frame.params, transmittance_lut, lut_sampler, r, dot(x / r, toward_light));
         let od = light_optical_depth(c, x, weather, footprint, toward_light);
-        direct += transmittance * energy
+        let gain = select(1.0, c.moon_gain, sky_is_celestial(sky_frame.directional_lights[base + 2u]));
+        direct += gain * transmittance * energy
             * cloud_sun_scattering(dot(view_ray, toward_light), od);
     }
     return direct;
@@ -204,11 +205,12 @@ fn trace_cirrus(c: CloudLayerParams, d: vec3<f32>, t: f32, footprint: f32) -> ve
         let od_sun = depth / max(dot(toward_light, up), 0.08);
         let sunlight = sky_sun_transmittance_lut(
             sky_frame.params, transmittance_lut, lut_sampler, length(x), dot(up, toward_light));
-        direct += sunlight * energy
+        let gain = select(1.0, c.moon_gain, sky_is_celestial(sky_frame.directional_lights[base + 2u]));
+        direct += gain * sunlight * energy
             * cloud_sun_scattering(dot(d, toward_light), od_sun);
     }
     let sky = sky_table_eval(d * t, up);
-    let source = c.albedo * (direct + 0.5 * sky);
+    let source = c.albedo * (direct + 0.5 * (sky + c.night_fill));
     let opacity = 1.0 - exp(-od);
     return vec4<f32>(source * opacity, 1.0 - opacity);
 }
@@ -289,7 +291,8 @@ fn trace_clouds(d: vec3<f32>, limit: f32, uv: vec2<f32>, jitter: f32) -> CloudTr
         // Isotropic in-scattering of the sky: half of each hemisphere's
         // irradiance / pi.
         let h = sample.y;
-        let ambient = 0.5 * (sky_above * mix(0.3, 1.0, h) + sky_below * mix(1.0, 0.5, h));
+        let ambient = 0.5 * (sky_above * mix(0.3, 1.0, h) + sky_below * mix(1.0, 0.5, h))
+            + c.night_fill * mix(0.35, 1.0, h);
         let source = c.albedo * (direct + ambient) * sigma;
         let step_t = exp(-sigma * dt);
         radiance += transmittance * source * (1.0 - step_t) / sigma;

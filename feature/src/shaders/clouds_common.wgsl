@@ -93,6 +93,11 @@ struct CloudLayerParams {
     // Voxel cells' side (km; 0: smooth) and the density they fill from.
     voxel: f32,
     fill: f32,
+    // The night sky's fill the clouds are lit with (linear radiance, already
+    // scaled by the darkness: zero by day) and the factor a celestial body's
+    // light is scaled by (one by day).
+    night_fill: vec3<f32>,
+    moon_gain: f32,
 }
 
 fn cloud_logit(p: f32) -> f32 {
@@ -142,6 +147,9 @@ fn cloud_layer_params(frame: SkyFrame, layers: SkyLayersFrame) -> CloudLayerPara
     c.pole = select(vec3<f32>(0.0, 1.0, 0.0), normalize(pole), dot(pole, pole) > 1e-8);
     c.voxel = max(l.cloud_voxel_size, 0.0);
     c.fill = clamp(l.cloud_voxel_fill, 0.0, 1.0);
+    let dark = layers.night.x;
+    c.night_fill = CLOUD_NIGHT_TINT * max(l.night_cloud_light, 0.0) * dark;
+    c.moon_gain = exp2(max(l.cloud_moon_boost, 0.0) * dark);
     return c;
 }
 

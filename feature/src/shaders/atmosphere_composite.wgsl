@@ -37,8 +37,6 @@
 // The sky's own layers (`helio_pass_sky::SKY_LAYERS`).
 @group(0) @binding(13) var<storage, read> layers: SkyLayersFrame;
 
-const SOLID_EMITTER_DISK: u32 = 253u;
-const TEXTURED_EMITTER_DISK: u32 = 254u;
 
 // A cloud footprint reaching the sky (`cloud_trace.wgsl`), km.
 const CLOUD_UNLIMITED: f32 = 60000.0;
@@ -132,27 +130,6 @@ fn clouds_in_front(uv: vec2<f32>, distance: f32) -> vec4<f32> {
     return unmatched;
 }
 
-// How much the scene's directional lights light the day: each light's
-// luminance, scaled by how far above the horizon it stands, summed over all of
-// them. The sun (~2) is daylight; a dim moon light (0.025) is not, whether or
-// not it is up. Light below the horizon contributes nothing.
-fn sky_daylight() -> f32 {
-    var daylight = 0.0;
-    for (var i = 0u; i < frame.directional_light_count.x; i++) {
-        let base = i * 3u;
-        let luminance = dot(frame.directional_lights[base + 1u].rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
-        daylight += luminance * smoothstep(-0.05, 0.15, frame.directional_lights[base].y);
-    }
-    return daylight;
-}
-
-// 1 when the lights leave the sky dark, 0 in full daylight, with a smooth
-// twilight between. The stars, shooting stars and the sky texture all fade by
-// this, so they follow the lights' brightness rather than a horizon test.
-fn sky_darkness() -> f32 {
-    return 1.0 - smoothstep(0.05, 0.6, sky_daylight());
-}
-
 fn directional_disk_radiance(d: vec3<f32>, through: vec3<f32>) -> vec3<f32> {
     var radiance = vec3<f32>(0.0);
     let radius = max(frame.params.sun_angular_radius, 1e-5);
@@ -160,8 +137,7 @@ fn directional_disk_radiance(d: vec3<f32>, through: vec3<f32>) -> vec3<f32> {
     for (var i = 0u; i < frame.directional_light_count.x; i++) {
         let base = i * 3u;
         let emitter = frame.directional_lights[base + 2u];
-        let kind = u32(emitter.z);
-        if emitter.w > 0.5 && (kind == SOLID_EMITTER_DISK || kind == TEXTURED_EMITTER_DISK) {
+        if sky_is_celestial(emitter) {
             continue;
         }
         let light_dir = frame.directional_lights[base].xyz;
@@ -369,8 +345,7 @@ fn emitter_disk_radiance(d: vec3<f32>) -> vec3<f32> {
         let base = i * 3u;
         let emitter = frame.directional_lights[base + 2u];
         let emitter_type = u32(emitter.z);
-        if emitter.w < 0.5
-            || (emitter_type != SOLID_EMITTER_DISK && emitter_type != TEXTURED_EMITTER_DISK) {
+        if !sky_is_celestial(emitter) {
             continue;
         }
         let toward_light = frame.directional_lights[base].xyz;
@@ -441,13 +416,13 @@ fn fs_composite(in: VertexOut) -> @location(0) vec4<f32> {
             // Backdrop panorama under the air, the emitter disks and the stars.
             let dims = textureDimensions(depth_texture);
             let pixel_angle = 2.0 / (camera.proj[1][1] * f32(dims.y));
-            radiance += sky_texture_radiance(d, pixel_angle) * through * sky_darkness();
+            radiance += sky_texture_radiance(d, pixel_angle) * through * layers.night.x;
             radiance += directional_disk_radiance(d, through);
             radiance += emitter_disk_radiance(d) * through;
         }
         // Procedural stars fade by the lights' brightness (they are gated by
         // `night_sky_enabled` inside), independent of the sky texture.
-        let darkness = sky_darkness();
+        let darkness = layers.night.x;
         if darkness > 0.001 {
             radiance += night_radiance(d, abs(2.0 / (camera.proj[1][1] * f32(textureDimensions(depth_texture).y)))) * darkness;
         }

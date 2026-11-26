@@ -115,9 +115,12 @@ fn resolve(@builtin(local_invocation_index) lane: u32) {
         sun = directional.lights[0].toward.xyz;
         illuminance = directional.lights[0].radiance.rgb;
     }
+    var daylight = 0.0;
     for (var i = 0u; i < directional_count; i++) {
         let light = directional.lights[i];
         let packed = i * 3u;
+        daylight += dot(light.radiance.rgb, SKY_LUMINANCE)
+            * smoothstep(SKY_HORIZON_FADE.x, SKY_HORIZON_FADE.y, light.toward.y);
         frame.directional_lights[packed] = vec4<f32>(light.toward.xyz, 0.0);
         frame.directional_lights[packed + 1u] = vec4<f32>(light.radiance.rgb, 0.0);
         frame.directional_lights[packed + 2u] = light.disk;
@@ -142,6 +145,7 @@ fn resolve(@builtin(local_invocation_index) lane: u32) {
     frame.eye = vec4<f32>(eye, 0.0);
     frame.params = params;
     layers.params = own;
+    layers.night = vec4<f32>(sky_darkness_of(daylight), 0.0, 0.0, 0.0);
     // The wind carries the clouds' noise; each offset wraps to its noise's
     // period, so it never loses precision however long the clock runs.
     // The planet's weather's phase advances by the clock times the

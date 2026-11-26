@@ -40,7 +40,11 @@ struct SkyLayers {
     // (km), filled from density `cloud_voxel_fill`.
     cloud_voxel_size: f32,
     cloud_voxel_fill: f32,
-    cloud_reserved: vec2<f32>,
+    // The night sky's light on the clouds (linear radiance of the airglow
+    // and starlight fill) and the stops brighter a celestial body lights them
+    // in the dark than its authored light does (`night.rs`).
+    night_cloud_light: f32,
+    cloud_moon_boost: f32,
     night_sky_enabled: u32,
     star_count: f32,
     star_brightness: f32,
@@ -79,6 +83,43 @@ struct SkyLayersFrame {
     cloud_meso_fine_offset: vec4<f32>,
     cloud_shape_offset: vec4<f32>,
     cloud_detail_offset: vec4<f32>,
+    // x: how dark the lights leave the sky, 0 in daylight to 1 in the dark
+    // (`resolve` folds every directional light into it, once a frame): the
+    // stars, the panorama and the clouds' night light fade by it. yzw unused.
+    night: vec4<f32>,
+}
+
+// How much the scene's directional lights light the day: each light's
+// luminance, scaled by how far above the horizon it stands (the weight rises
+// from SKY_HORIZON_FADE.x to .y of its elevation's sine), summed over all of
+// them. The sun (~2) is daylight; a dim moon light (0.025) is not, whether or
+// not it is up. Light below the horizon contributes nothing. `night.rs` is its
+// CPU twin.
+const SKY_LUMINANCE = vec3<f32>(0.2126, 0.7152, 0.0722);
+const SKY_HORIZON_FADE = vec2<f32>(-0.05, 0.15);
+// 1 when `daylight` leaves the sky dark (below SKY_DARK_RANGE.x), 0 in full
+// daylight (above .y), a smooth twilight between.
+const SKY_DARK_RANGE = vec2<f32>(0.05, 0.6);
+
+fn sky_darkness_of(daylight: f32) -> f32 {
+    return 1.0 - smoothstep(SKY_DARK_RANGE.x, SKY_DARK_RANGE.y, daylight);
+}
+
+// The tint of the night sky's light on the clouds: airglow and starlight, cool.
+const CLOUD_NIGHT_TINT = vec3<f32>(0.55, 0.72, 1.0);
+
+// A directional light's emitter words (`DirectionalLight::disk`: angular
+// radius, brightness, kind, enabled): the kinds of disk a light draws in the
+// sky as a body of its own (the moon), as the lights' own flare code writes them.
+const SOLID_EMITTER_DISK: u32 = 253u;
+const TEXTURED_EMITTER_DISK: u32 = 254u;
+
+// Whether a light is a celestial body: it draws its own disk in the sky, so
+// the sun's disk is not drawn for it, and the clouds light it by the night's
+// eye (`cloud_moon_boost`).
+fn sky_is_celestial(emitter: vec4<f32>) -> bool {
+    let kind = u32(emitter.z);
+    return emitter.w > 0.5 && (kind == SOLID_EMITTER_DISK || kind == TEXTURED_EMITTER_DISK);
 }
 
 // What `resolve` decided for the frame, on the GPU, where the row is read: the

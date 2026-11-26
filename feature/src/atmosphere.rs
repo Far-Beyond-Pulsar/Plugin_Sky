@@ -69,8 +69,8 @@ pub use helio_frame_api::lighting::sky::{
 /// with the frame's sky ([`SKY_FRAME`]) from the same row; read only by the
 /// sky's passes.
 pub const SKY_LAYERS: &str = "sky_layers";
-/// Bytes of `SkyLayersFrame`: the row's layers, then five wind offsets.
-pub const SKY_LAYERS_BYTES: u64 = SKY_LAYERS_PARAMS_BYTES + 5 * 16;
+/// Bytes of `SkyLayersFrame`: the row's layers, five wind offsets, then the night.
+pub const SKY_LAYERS_BYTES: u64 = SKY_LAYERS_PARAMS_BYTES + 6 * 16;
 /// Bytes of the row's layers (`SkyLayers`): what follows the frame's medium
 /// in an [`AtmosphereRow`].
 pub const SKY_LAYERS_PARAMS_BYTES: u64 = 192;
@@ -190,8 +190,17 @@ pub struct AtmosphereRow {
     pub cloud_voxel_size: f32,
     /// The density (0..1) a voxel cell is filled from.
     pub cloud_voxel_fill: f32,
-    /// Unused: the row stays a whole number of vec4s.
-    pub cloud_reserved: [f32; 2],
+    /// The night sky's light on the clouds: the linear radiance of the
+    /// airglow and starlight that fills them (irradiance over pi, the sky
+    /// table's unit), cool-tinted ([`night::CLOUD_FILL_TINT`]) and scaled by
+    /// how dark the lights leave the sky ([`night::darkness`]). Without it a
+    /// cloud the moon does not reach is black.
+    pub night_cloud_light: f32,
+    /// The stops (EV) by which a celestial body (a directional light with an
+    /// emitter disk: the moon) lights the clouds brighter in the dark than its
+    /// authored light does, for the eye adapted to the night ([`night`]);
+    /// 0 leaves it as authored, and in daylight it is always so.
+    pub cloud_moon_boost: f32,
     /// Night sky appears when the directional light is below the horizon.
     pub night_sky_enabled: u32,
     /// Approximate star count over the full celestial sphere.
@@ -259,6 +268,8 @@ impl AtmosphereRow {
             sun_angular_radius: 0.004675,
             enabled: 1,
             night_sky_enabled: 1,
+            night_cloud_light: crate::night::DEFAULT_CLOUD_LIGHT,
+            cloud_moon_boost: crate::night::DEFAULT_MOON_BOOST,
             star_count: 1800.0,
             star_brightness: 2.0,
             star_twinkle_fraction: 0.16,

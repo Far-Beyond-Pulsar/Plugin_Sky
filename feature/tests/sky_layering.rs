@@ -6,6 +6,7 @@ use helio_pass_sky::sky_texture::{
 use std::path::{Path, PathBuf};
 
 const COMPOSITE: &str = include_str!("../src/shaders/atmosphere_composite.wgsl");
+const LUTS: &str = include_str!("../src/shaders/atmosphere_luts.wgsl");
 
 fn body_of<'a>(source: &'a str, function: &str) -> &'a str {
     let start = source
@@ -34,7 +35,11 @@ fn composite_layers_the_panorama_under_the_procedural_sky() {
         "additive: it never replaces the atmosphere"
     );
     // The panorama and the procedural stars are separate switches.
-    assert!(!body_of(COMPOSITE, "fn sky_darkness").contains("night_sky_enabled"));
+    assert!(!body_of(LUTS, "fn resolve").contains("night_sky_enabled"));
+    assert!(
+        COMPOSITE.contains("layers.night.x"),
+        "the panorama and the stars fade by the darkness `resolve` folded from every light"
+    );
     assert!(!body_of(COMPOSITE, "fn sky_texture_radiance").contains("night_sky_enabled"));
     // It uses the wrapping sampler, not the clamped LUT sampler.
     assert!(body_of(COMPOSITE, "fn sky_texture_radiance").contains("sky_sampler"));
@@ -44,7 +49,6 @@ fn composite_layers_the_panorama_under_the_procedural_sky() {
 fn composite_keeps_every_directional_light() {
     for function in [
         "fn march_from_space",
-        "fn sky_daylight",
         "fn directional_disk_radiance",
         "fn emitter_disk_radiance",
     ] {
@@ -56,6 +60,11 @@ fn composite_keeps_every_directional_light() {
     assert!(
         !COMPOSITE.contains("directional_lights[0]"),
         "no first-light-only lighting"
+    );
+    // The darkness every fade follows sums every light, once a frame.
+    assert!(
+        body_of(LUTS, "fn resolve").contains("daylight += dot(light.radiance.rgb, SKY_LUMINANCE)"),
+        "the darkness counts every directional light"
     );
 }
 
@@ -169,12 +178,12 @@ fn a_missing_file_is_an_error_not_a_panic() {
 
 #[test]
 fn night_follows_light_brightness_not_a_horizon_test() {
-    let daylight = body_of(COMPOSITE, "fn sky_daylight");
+    let resolve = body_of(LUTS, "fn resolve");
     // Brightness (luminance) of every light, weighted by elevation.
-    assert!(daylight.contains("luminance"));
-    assert!(daylight.contains("daylight +="));
+    assert!(resolve.contains("daylight += dot(light.radiance.rgb, SKY_LUMINANCE)"));
+    assert!(resolve.contains("sky_darkness_of(daylight)"));
     assert!(!COMPOSITE.contains("sky_is_night"));
     // Stars and the texture share the same fade.
     assert!(COMPOSITE.contains("night_radiance(d, "));
-    assert!(COMPOSITE.contains("* sky_darkness()"));
+    assert!(COMPOSITE.contains("* layers.night.x"));
 }
