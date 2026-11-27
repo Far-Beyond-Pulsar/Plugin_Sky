@@ -103,4 +103,4 @@ Helio's repository; this repository's history starts with that move
 
 ## License
 
-MIT, as the rest of Pulsar (`LICENSE.md`).
+MPL-2.0, as the rest of Pulsar (`LICENSE`).
